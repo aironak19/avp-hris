@@ -17,4 +17,4 @@ window.HRIS_CONFIG = {
 
 /* Cache-buster for the on-demand view modules. Bump on every release so
    returning browsers never mix a new shell with an old screen. */
-window.HRIS_BUILD = '2.0.0';
+window.HRIS_BUILD = '2.0.1';

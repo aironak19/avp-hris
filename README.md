@@ -55,6 +55,57 @@ server parses the body with `JSON.parse`. Do not "fix" the content type.
 
 ---
 
+## Performance: where the time actually goes
+
+Measured against the live deployment, from a browser on a normal connection:
+
+| | |
+| --- | --- |
+| A static file from GitHub Pages (21 KB module) | **233 ms** |
+| One `/exec` round trip — `app.ping`, which does nothing | **2,600 ms** |
+| Three concurrent `/exec` round trips | **3,800 ms** |
+
+That second row is the whole story. It is not the spreadsheet, and it is not
+the business logic: a route that returns a timestamp costs the same as one that
+reads a sheet. It is Apps Script's web-app overhead — the POST is answered with
+a 302 to `googleusercontent.com` and the browser has to make a second request
+to a second host to collect the result. Nothing server-side moves it.
+
+`google.script.run` avoided most of that cost by being a lighter same-origin
+channel into an already-established session. That option disappears the moment
+the UI stops being served by Apps Script, so the only lever left is **round
+trips, not milliseconds**. Everything below follows from that.
+
+### What was done about it
+
+- **`app.config` no longer blocks boot.** It is only needed to draw the login
+  screen, so a signed-in load no longer waits on it. *Saves one full round
+  trip — about 2.6 s — on every visit.*
+- **Calls issued in the same tick are coalesced into one `app.batch` request.**
+  Screens were already firing their independent reads with `Promise.all`, which
+  was nearly free over `google.script.run` but is three separate round trips
+  over HTTP. My profile went from 3 requests to 1. *No view module changed.*
+- **Reads are cached for 90 s and revalidated behind the paint.** Returning to
+  a screen you already opened paints in about **26 ms** instead of 2.6 s. If
+  the fresh copy differs, the view is re-rendered — but only when that cannot
+  interrupt anyone (same route, no dialog open, nothing focused). Any write
+  clears the cache outright.
+- **The landing screen's module downloads alongside the session call** instead
+  of after it.
+- **Scripts are deferred**, so parsing is not blocked by 90 KB of JavaScript.
+
+A cached read can only ever make the *display* briefly stale. It can never let
+a rule be bypassed: every action is itself a server call, authorised and
+validated against fresh data on the server.
+
+### What is still slow, and honestly cannot be fixed here
+
+The first call of any screen that has no cached copy costs ~2.6 s. That is the
+floor for this architecture. Getting below it means not using Apps Script as
+the HTTP API — which would mean a real backend, and a bill.
+
+---
+
 ## Repository layout
 
 ```
@@ -168,6 +219,14 @@ branch from `WebApp.gs` once the new client has been trusted for a few weeks.
 
 ## Notes for whoever maintains this next
 
+- **Never widen an automatic retry to cover writes.** `post()` retries only
+  when every action in the request is a read; replaying an approval or a leave
+  application because the network hiccuped would be far worse than an error.
+- **The service worker must never answer a script request with `index.html`.**
+  It did once (fixed in v2.0.1): the browser fired `load`, tried to run HTML as
+  JavaScript, the screen module never registered, and the router quietly fell
+  through to Home — so a broken screen looked like a working one. The shell is
+  now only served for `request.mode === 'navigate'`.
 - **Bump `HRIS_BUILD` in `config.js` and `CACHE` in `sw.js` on every release.**
   The service worker is network-first for code, so a stale shell is unlikely,
   but the version string is what guarantees it.
