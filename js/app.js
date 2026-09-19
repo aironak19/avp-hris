@@ -471,7 +471,17 @@ var App = (function () {
       '<div class="skeleton" style="height:14px;width:70%"></div><div class="skeleton" style="height:14px;width:55%"></div></div>';
 
     ensureRouteLoaded(S.route).then(function () {
+      /* If the module file loaded but did not register its view, something
+         served us the wrong bytes (a captive portal, a stale proxy, or the
+         service-worker fallback bug fixed in v2.0.1). Falling through to Home
+         here is what made a broken screen look like a working one, so say it
+         plainly instead. */
+      if (LAZY_VIEW_ROUTES[S.route] && !S.views[S.route]) {
+        throw new Error('The ' + (S.route.charAt(0).toUpperCase() + S.route.slice(1)) +
+          ' screen did not load correctly. Reload the page to try again.');
+      }
       var view = S.views[S.route] || S.views.home;
+      if (!view) throw new Error('This screen could not be loaded. Reload the page to try again.');
       S.current = view;
       var title = document.getElementById('page-title');
       if (title) title.textContent = view.title || '';
@@ -980,7 +990,12 @@ var App = (function () {
     } catch (e) {}
   }
 
-  function signOutLocal() { S.token = null; S.user = null; S.boot = null; S.homePayload = null; store.del('hris_token'); store.del(SNAP_KEY); }
+  function signOutLocal() {
+    S.token = null; S.user = null; S.boot = null; S.homePayload = null;
+    store.del('hris_token'); store.del(SNAP_KEY);
+    // Cached reads belong to the session that just ended.
+    try { HRIS.clearReadCache(); } catch (e) {}
+  }
 
   function signOut() {
     var t = S.token;
@@ -1054,6 +1069,9 @@ var App = (function () {
     renderChangePassword: renderChangePassword, signOut: signOut, store: store,
     renderOnboarding: renderOnboarding, showDocumentsModal: showDocumentsModal,
     // v1.6.0
-    brandLogo: brandLogo, brandMark: brandMark, refreshSession: refreshSession, loadModule: loadModule, icon: typeof icon === 'function' ? icon : null
+    brandLogo: brandLogo, brandMark: brandMark, refreshSession: refreshSession, loadModule: loadModule, icon: typeof icon === 'function' ? icon : null,
+    // v2.0.1 — app.config is fetched after boot now, so the login screen has to
+    // be able to redraw itself once the Google button and hint text arrive.
+    renderLoginAgain: function () { if (!S.user) renderLogin(); }
   };
 })();
