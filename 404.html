@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>AVP HRIS</title>
+  <!-- GitHub Pages serves this for any unknown path. The app itself routes on
+       the hash, so the only correct response is to send the visitor to the
+       app root, preserving whatever query and hash they arrived with. -->
+  <script>
+    location.replace(location.pathname.replace(/\/[^/]*$/, '/') + location.search + location.hash);
+  </script>
+</head>
+<body></body>
+</html>

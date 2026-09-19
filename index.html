@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="auto">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>AVP HRIS</title>
+  <meta name="description" content="AVP Structural Consultants — people, attendance, leave, payroll and letters in one place.">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f3f2f2" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#141313" media="(prefers-color-scheme: dark)">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="AVP HRIS">
+
+  <link rel="icon" href="assets/logo-mark.webp" type="image/webp">
+  <link rel="apple-touch-icon" href="assets/logo-full.png">
+  <link rel="manifest" href="manifest.webmanifest">
+
+  <!-- The RPC endpoint is on another origin; warming the connection here saves
+       a DNS + TLS round trip on the very first call, which is the one the user
+       actually waits for. -->
+  <link rel="preconnect" href="https://script.google.com">
+  <link rel="preconnect" href="https://script.googleusercontent.com" crossorigin>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+
+  <!-- Theme is applied before first paint so a dark-mode user never sees a
+       white flash. Deliberately inline and synchronous. -->
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('hris_theme');
+        if (t === 'dark' || t === 'light') document.documentElement.setAttribute('data-theme', t);
+        else document.documentElement.removeAttribute('data-theme');
+        var d = localStorage.getItem('hris_density');
+        if (d) document.documentElement.setAttribute('data-density', d);
+      } catch (e) {}
+    })();
+  </script>
+
+  <link rel="stylesheet" href="styles/tokens.css">
+  <link rel="stylesheet" href="styles/app.css">
+  <link rel="stylesheet" href="styles/motion.css">
+
+  <!-- Non-blocking font load: the app renders in the system stack and swaps. -->
+  <link rel="stylesheet" media="print" onload="this.media='all'"
+        href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=Caveat:wght@500;600&display=swap">
+  <noscript>
+    <link rel="stylesheet"
+          href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=Caveat:wght@500;600&display=swap">
+  </noscript>
+
+  <style>
+    /* First paint only — the splash that shows while the config call is in
+       flight. Inlined so it needs no extra request. */
+    @keyframes avpPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .55; transform: scale(.96); } }
+    .boot-splash { min-height: 100svh; display: grid; place-items: center; }
+    .boot-splash img { width: 200px; max-width: 70vw; display: block; margin: 0 auto 18px; animation: avpPulse 1.6s ease-in-out infinite; }
+    @media (prefers-reduced-motion: reduce) { .boot-splash img { animation: none; } }
+  </style>
+</head>
+<body>
+  <div class="netbar" role="status">You are offline — changes cannot be saved right now.</div>
+  <div class="progress-top" id="progress" aria-hidden="true"></div>
+
+  <div id="app">
+    <div class="boot-splash">
+      <div style="text-align:center">
+        <img src="assets/logo-full.webp" alt="AVP Structural Consultants" width="200" height="80">
+        <div class="row" style="justify-content:center;gap:8px">
+          <span class="spinner"></span>
+          <span class="small muted">Loading…</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toasts" role="status" aria-live="polite"></div>
+  <div id="modal-root"></div>
+
+  <noscript>
+    <div style="padding:40px;text-align:center;font-family:system-ui">
+      <h3>JavaScript is required</h3>
+      <p>AVP HRIS needs JavaScript enabled to sign you in and load your data.</p>
+    </div>
+  </noscript>
+
+  <script src="config.js"></script>
+  <script src="js/runtime.js"></script>
+  <script src="js/icons.js"></script>
+  <script src="js/app.js"></script>
+  <script src="js/enhance.js"></script>
+  <script>HRIS.start();</script>
+</body>
+</html>

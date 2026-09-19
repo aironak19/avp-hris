@@ -1,0 +1,15 @@
+{
+  "name": "AVP HRIS",
+  "short_name": "AVP HRIS",
+  "description": "AVP Structural Consultants — people, attendance, leave, payroll and letters.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f3f2f2",
+  "theme_color": "#ec3013",
+  "icons": [
+    { "src": "assets/logo-mark.webp", "sizes": "96x131", "type": "image/webp", "purpose": "any" },
+    { "src": "assets/logo-full.png", "sizes": "360x144", "type": "image/png", "purpose": "any" }
+  ]
+}
