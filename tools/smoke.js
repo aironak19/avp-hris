@@ -46,7 +46,7 @@ function expected(text) { return EXPECTED.some((re) => re.test(text)); }
   page.on('requestfailed', (r) => note('request', `${r.url()} — ${r.failure()?.errorText}`));
 
   // Point the app at the mock without editing the committed config.js.
-  await page.route('**/config.js', (route) =>
+  await page.route('**/config.js*', (route) =>   // note the *: config.js is requested with a ?v= cache-buster
     route.fulfill({
       contentType: 'text/javascript',
       body: `window.HRIS_CONFIG={endpoint:'${BASE}/exec'};window.HRIS_BUILD='test';`
