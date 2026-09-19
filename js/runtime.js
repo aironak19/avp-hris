@@ -168,10 +168,13 @@
   function scheduleRerender(route) {
     if (rerenderQueued) return;
     rerenderQueued = true;
-    setTimeout(function () {
+    var run = function () {
       rerenderQueued = false;
       if (safeToRerender(route)) App.render();
-    }, 60);
+    };
+    // rAF in a visible tab, microtask in a hidden one — never a throttled timer.
+    if (typeof requestAnimationFrame === 'function' && !document.hidden) requestAnimationFrame(run);
+    else Promise.resolve().then(run);
   }
 
   function currentRoute() {
@@ -188,25 +191,39 @@
      three concurrent no-ops took 3.8 s). Coalescing everything issued in the
      same tick into one app.batch request turns a three-call screen into a
      single round trip. Views did not have to change for this. */
-  var BATCH_WINDOW_MS = 10;
   var BATCH_MAX = 15;
   var batchSupported = true;
 
   var pending = [];        // { action, payload, resolve, reject }
-  var flushTimer = null;
+  var flushScheduled = false;
   var inflight = Object.create(null);   // de-dup identical concurrent reads
+
+  /* Flushing on a microtask, not a timer.
+     A setTimeout here would be correct in theory and awful in practice: Chrome
+     throttles timers in a hidden tab to roughly once a second, and after the
+     tab has been hidden for five minutes it drops to once a *minute*. Batching
+     on a timer therefore made the app look frozen for up to a minute when
+     someone came back to a tab they had left open — which is most of the day
+     for an HR tool. A microtask runs at the end of the current task, is never
+     throttled, and still catches everything a Promise.all fires synchronously,
+     which is the case worth batching. */
+  function scheduleFlush() {
+    if (flushScheduled) return;
+    flushScheduled = true;
+    Promise.resolve().then(flush);
+  }
 
   function enqueue(action, payload) {
     return new Promise(function (resolve, reject) {
       pending.push({ action: action, payload: payload, resolve: resolve, reject: reject });
-      if (flushTimer === null) flushTimer = setTimeout(flush, BATCH_WINDOW_MS);
+      scheduleFlush();
     });
   }
 
   function flush() {
-    flushTimer = null;
+    flushScheduled = false;
     var group = pending.splice(0, BATCH_MAX);
-    if (pending.length) flushTimer = setTimeout(flush, 0);
+    if (pending.length) scheduleFlush();
     if (!group.length) return;
 
     if (group.length === 1 || !batchSupported) {
