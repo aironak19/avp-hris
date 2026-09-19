@@ -27,6 +27,10 @@ const shift = (d, n) => { const x = new Date(d + 'T12:00:00'); x.setDate(x.getDa
 
 const TOKEN = 'mock-session-token';
 
+/* How many HTTP requests carried how many actions — the ratio is the whole
+   point of batching, so the smoke test asserts on it. */
+const STATS = { httpRequests: 0, actions: 0 };
+
 const USER = {
   employeeId: 'E0001', code: 'AVP001', name: 'Ronak Mehta', initials: 'RM',
   email: 'ronak@example.com', phone: '9876543210', gender: 'Male',
@@ -221,7 +225,15 @@ const ROUTES = {
   'admin.audit': () => []
 };
 
+/* Mirrors appBatch() in Rpc.gs: each entry is dispatched independently and
+   gets its own envelope, so the client sees exactly the production shape. */
+function batch(calls) {
+  if (!Array.isArray(calls)) return [];
+  return calls.map((c) => dispatch((c || {}).action, (c || {}).payload));
+}
+
 function dispatch(action, payload) {
+  if (action === 'app.batch') return { ok: true, data: batch(payload && payload.calls), ms: 1 };
   const fn = ROUTES[action];
   if (!fn) return { ok: false, error: 'Unknown action: ' + action, code: 'ERROR' };
   try {
@@ -242,6 +254,11 @@ const TYPES = {
 http.createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
 
+  if (url.pathname === '/__stats') {
+    res.writeHead(200, Object.assign({ 'Content-Type': 'application/json' }, cors()));
+    return res.end(JSON.stringify(STATS));
+  }
+
   if (url.pathname === '/exec') {
     if (req.method === 'OPTIONS') { res.writeHead(204, cors()); return res.end(); }
     if (req.method === 'POST') {
@@ -250,6 +267,9 @@ http.createServer((req, res) => {
       return req.on('end', () => {
         let parsed = {};
         try { parsed = JSON.parse(body); } catch (e) {}
+        STATS.httpRequests++;
+        STATS.actions += (parsed.action === 'app.batch' && parsed.payload && parsed.payload.calls)
+          ? parsed.payload.calls.length : 1;
         const out = dispatch(parsed.action, parsed.payload);
         // Mimic Apps Script's latency so loading states are exercised.
         setTimeout(() => {

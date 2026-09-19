@@ -115,6 +115,15 @@ function expected(text) { return EXPECTED.some((re) => re.test(text)); }
   await page.waitForTimeout(250);
   await page.screenshot({ path: 'tools/shot-light.png', fullPage: false });
 
+  console.log('\n▸ batching');
+  const stats = await page.evaluate(async (base) => {
+    const r = await fetch(base + '/__stats');
+    return r.json();
+  }, BASE);
+  const ratio = stats.httpRequests ? (stats.actions / stats.httpRequests) : 0;
+  step(`${stats.actions} actions carried by ${stats.httpRequests} HTTP requests (${ratio.toFixed(2)} per request)`);
+  if (ratio <= 1.0) errors.push('[batch] nothing was coalesced — every action cost its own round trip');
+
   console.log('\n▸ mobile');
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(400);
