@@ -22,7 +22,7 @@
    ========================================================================== */
 /* Keep BUILD in step with HRIS_BUILD in config.js and the ?v= in index.html:
    those three together are what makes a release actually reach a browser. */
-var BUILD = '2.0.1';
+var BUILD = '2.0.2';
 var CACHE = 'avp-hris-v' + BUILD;
 
 /* The versioned URLs are the ones index.html actually requests, so those are
