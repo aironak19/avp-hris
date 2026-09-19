@@ -76,6 +76,45 @@ function appConfig() {
   };
 }
 
+/**
+ * Runs several actions inside one execution.
+ *
+ * Why this exists: a single /exec round trip costs about 2.6 seconds of
+ * platform overhead regardless of what the route does (the POST is answered
+ * with a 302 and the browser has to fetch the result from a second host).
+ * Screens that legitimately need three independent reads were therefore paying
+ * three times that. The client coalesces everything issued in the same tick
+ * into one call to this route.
+ *
+ * Security: this route is marked `anon` only because it performs no work of
+ * its own. Every entry is dispatched through rpc(), so each one is
+ * authenticated and role-checked individually, exactly as if it had arrived on
+ * its own. A batch cannot be used to reach a route the caller's token does not
+ * already permit.
+ *
+ * Each entry gets its own { ok, data } / { ok:false, error } envelope, so one
+ * failing action never hides the results of the others. Order is preserved.
+ */
+var BATCH_MAX_CALLS = 15;
+
+function appBatch(calls) {
+  if (!calls || !calls.length) return [];
+  if (calls.length > BATCH_MAX_CALLS) {
+    throw new Error('A batch may contain at most ' + BATCH_MAX_CALLS + ' calls.');
+  }
+  var out = [];
+  for (var i = 0; i < calls.length; i++) {
+    var c = calls[i] || {};
+    var action = String(c.action || '');
+    if (!action || action === 'app.batch') {
+      out.push({ ok: false, error: 'Invalid action in batch.', code: 'BAD_REQUEST' });
+      continue;
+    }
+    out.push(rpc(action, c.payload || {}));
+  }
+  return out;
+}
+
 /** Adds the transport-only routes to the existing table, once. */
 function ensureBridgeRoutes_() {
   var routes = Api.routes();
@@ -84,6 +123,9 @@ function ensureBridgeRoutes_() {
   }
   if (!routes['app.ping']) {
     routes['app.ping'] = { anon: true, fn: function () { return { ok: true, at: new Date().toISOString() }; } };
+  }
+  if (!routes['app.batch']) {
+    routes['app.batch'] = { anon: true, fn: function (_, p) { return appBatch(p && p.calls); } };
   }
   return routes;
 }
