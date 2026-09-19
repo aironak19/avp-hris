@@ -20,12 +20,23 @@
 
    Bump CACHE on every release to evict the previous shell.
    ========================================================================== */
-var CACHE = 'avp-hris-v2.0.1';
+/* Keep BUILD in step with HRIS_BUILD in config.js and the ?v= in index.html:
+   those three together are what makes a release actually reach a browser. */
+var BUILD = '2.0.1';
+var CACHE = 'avp-hris-v' + BUILD;
 
+/* The versioned URLs are the ones index.html actually requests, so those are
+   the ones worth having available offline. */
 var PRECACHE = [
-  './', './index.html', './config.js',
-  './styles/tokens.css', './styles/app.css', './styles/motion.css',
-  './js/runtime.js', './js/icons.js', './js/app.js', './js/enhance.js',
+  './', './index.html',
+  './config.js?v=' + BUILD,
+  './styles/tokens.css?v=' + BUILD,
+  './styles/app.css?v=' + BUILD,
+  './styles/motion.css?v=' + BUILD,
+  './js/runtime.js?v=' + BUILD,
+  './js/icons.js?v=' + BUILD,
+  './js/app.js?v=' + BUILD,
+  './js/enhance.js?v=' + BUILD,
   './assets/logo-full.webp', './assets/logo-mark.webp',
   './manifest.webmanifest'
 ];
