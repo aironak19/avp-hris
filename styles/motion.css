@@ -1,0 +1,205 @@
+/* ==========================================================================
+   AVP HRIS — motion
+   --------------------------------------------------------------------------
+   Motion here has one job: explain what changed. Everything below is tied to
+   a real state change (a route arriving, a row being added, a dialog taking
+   focus) — nothing loops for decoration except the two indeterminate
+   indicators, which are communicating "still working".
+
+   Budget: 110ms for a state flip, 180ms for a local move, 260ms for something
+   entering the page, 420ms only for a full-view transition. Anything slower
+   than that starts to feel like latency rather than feedback.
+   ========================================================================== */
+
+/* ----------------------------------------------------------- view transitions
+   Chromium runs the real View Transitions API (see app.js); the keyframes
+   below are what it cross-fades between. Other browsers fall back to the
+   plain .view-enter class, which looks nearly identical.
+---------------------------------------------------------------------------- */
+@view-transition { navigation: none; }
+
+::view-transition-old(page) {
+  animation: vt-out var(--dur-2) var(--ease-exit) both;
+}
+::view-transition-new(page) {
+  animation: vt-in var(--dur-4) var(--ease-enter) both;
+}
+@keyframes vt-out { to { opacity: 0; transform: translateY(-6px); } }
+@keyframes vt-in  { from { opacity: 0; transform: translateY(10px); } }
+
+/* The shell must not move while the view inside it does. */
+.sidebar, .topbar, .mobhead, .mobnav { view-transition-name: none; }
+
+.view-enter { animation: vt-in var(--dur-4) var(--ease-enter) both; }
+
+/* --------------------------------------------------------------- entrances
+   `.stagger > *` gives each child a slightly later start, so a list resolves
+   as a sequence rather than a flash. Capped at 12 so a 400-row table does not
+   take four seconds to appear.
+---------------------------------------------------------------------------- */
+.fade-in { animation: fade-in var(--dur-3) var(--ease-enter) both; }
+@keyframes fade-in { from { opacity: 0; } }
+
+.rise-in { animation: rise-in var(--dur-3) var(--ease-enter) both; }
+@keyframes rise-in { from { opacity: 0; transform: translateY(8px); } }
+
+.stagger > * { animation: rise-in var(--dur-3) var(--ease-enter) both; }
+.stagger > *:nth-child(1)  { animation-delay: 0ms; }
+.stagger > *:nth-child(2)  { animation-delay: 28ms; }
+.stagger > *:nth-child(3)  { animation-delay: 56ms; }
+.stagger > *:nth-child(4)  { animation-delay: 84ms; }
+.stagger > *:nth-child(5)  { animation-delay: 112ms; }
+.stagger > *:nth-child(6)  { animation-delay: 140ms; }
+.stagger > *:nth-child(7)  { animation-delay: 168ms; }
+.stagger > *:nth-child(8)  { animation-delay: 196ms; }
+.stagger > *:nth-child(9)  { animation-delay: 224ms; }
+.stagger > *:nth-child(10) { animation-delay: 252ms; }
+.stagger > *:nth-child(11) { animation-delay: 280ms; }
+.stagger > *:nth-child(n+12) { animation-delay: 300ms; }
+
+/* Panels and stat strips are the first thing on most screens; give them the
+   entrance automatically so views did not have to be edited to opt in. */
+.view .statstrip > div { animation: rise-in var(--dur-3) var(--ease-enter) both; }
+.view .statstrip > div:nth-child(2) { animation-delay: 40ms; }
+.view .statstrip > div:nth-child(3) { animation-delay: 80ms; }
+.view .statstrip > div:nth-child(4) { animation-delay: 120ms; }
+
+.view .list > .item { animation: rise-in var(--dur-2) var(--ease-enter) both; }
+.view .list > .item:nth-child(2) { animation-delay: 24ms; }
+.view .list > .item:nth-child(3) { animation-delay: 48ms; }
+.view .list > .item:nth-child(4) { animation-delay: 72ms; }
+.view .list > .item:nth-child(5) { animation-delay: 96ms; }
+.view .list > .item:nth-child(n+6) { animation-delay: 110ms; }
+
+/* ------------------------------------------------------------------ dialogs */
+.backdrop { animation: fade-in var(--dur-2) var(--ease-move) both; }
+.modal { animation: modal-in var(--dur-3) var(--ease-spring) both; }
+@keyframes modal-in {
+  from { opacity: 0; transform: translateY(14px) scale(.97); }
+}
+
+.backdrop.is-closing { animation: fade-out var(--dur-2) var(--ease-exit) both; }
+.backdrop.is-closing .modal { animation: modal-out var(--dur-2) var(--ease-exit) both; }
+@keyframes fade-out { to { opacity: 0; } }
+@keyframes modal-out { to { opacity: 0; transform: translateY(8px) scale(.98); } }
+
+@media (max-width: 900px) {
+  /* As a bottom sheet it should come from the bottom, not the middle. */
+  .modal { animation: sheet-in var(--dur-3) var(--ease-spring) both; }
+  @keyframes sheet-in { from { transform: translateY(100%); } }
+  .backdrop.is-closing .modal { animation: sheet-out var(--dur-2) var(--ease-exit) both; }
+  @keyframes sheet-out { to { transform: translateY(100%); } }
+}
+
+/* -------------------------------------------------------------------- toast */
+.toast { animation: toast-in var(--dur-3) var(--ease-spring) both; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(16px) scale(.96); } }
+.toast.is-closing { animation: toast-out var(--dur-2) var(--ease-exit) both; }
+@keyframes toast-out { to { opacity: 0; transform: translateY(8px) scale(.98); } }
+/* Kept for compatibility: the Apps Script build animated toasts with `rise`. */
+@keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+
+/* -------------------------------------------------------------- navigation */
+.sidebar.open { animation: slide-in var(--dur-3) var(--ease-enter) both; }
+@keyframes slide-in { from { transform: translateX(-100%); } }
+.scrim { animation: fade-in var(--dur-2) var(--ease-move) both; }
+
+/* The active-route marker grows from the top rather than snapping in. */
+.nav button.on { position: relative; }
+.nav button.on::before {
+  content: ""; position: absolute; left: -2px; top: 0; bottom: 0; width: 2px;
+  background: var(--accent); transform-origin: center;
+  animation: nav-mark var(--dur-3) var(--ease-spring) both;
+}
+@keyframes nav-mark { from { transform: scaleY(0); } }
+
+/* ------------------------------------------------------------- transitions */
+/* Content replacing a skeleton should cross-fade, not pop. */
+.swap-in { animation: fade-in var(--dur-2) var(--ease-move) both; }
+
+/* A value that just changed gets one brief highlight — used by App.flash(). */
+.flash { animation: flash var(--dur-4) var(--ease-move) both; }
+@keyframes flash {
+  0%   { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+  100% { background: transparent; }
+}
+
+/* A row that was just removed collapses instead of vanishing. */
+.collapse-out { animation: collapse-out var(--dur-3) var(--ease-exit) both; overflow: hidden; }
+@keyframes collapse-out {
+  to { opacity: 0; height: 0; padding-top: 0; padding-bottom: 0; margin: 0; border-width: 0; transform: translateX(-12px); }
+}
+
+/* --------------------------------------------------------------- indicators */
+.progress-top {
+  position: fixed; top: 0; left: 0; height: 2px; width: 0;
+  background: var(--accent); z-index: 600;
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 60%, transparent);
+  transition: width var(--dur-4) var(--ease-move), opacity var(--dur-2) var(--ease-move);
+}
+.progress-top.done { opacity: 0; }
+
+/* ---------------------------------------------------------- command palette */
+.cmdk-backdrop {
+  position: fixed; inset: 0; z-index: 450;
+  background: rgba(20, 19, 19, .5);
+  backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: max(10vh, 60px) 16px 16px;
+  animation: fade-in var(--dur-2) var(--ease-move) both;
+}
+.cmdk {
+  width: min(600px, 100%); background: var(--bg); box-shadow: var(--shadow-xl);
+  border: 1px solid var(--line); display: flex; flex-direction: column;
+  max-height: 60svh; animation: modal-in var(--dur-3) var(--ease-spring) both;
+}
+.cmdk input {
+  border: 0; border-bottom: 2px solid var(--divider); background: transparent;
+  padding: 16px 18px; font: inherit; font-size: 16px; color: var(--text); outline: none;
+}
+.cmdk-list { overflow: auto; padding: 6px 0; }
+.cmdk-item {
+  display: flex; align-items: center; gap: 12px; padding: 10px 18px;
+  cursor: pointer; font-size: 14px; border-left: 2px solid transparent;
+}
+.cmdk-item svg { width: 16px; height: 16px; flex: none; color: var(--muted); }
+.cmdk-item .sub { margin-left: auto; font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: .06em; }
+.cmdk-item.on { background: var(--wash-strong); border-left-color: var(--accent); }
+.cmdk-item.on svg { color: var(--accent); }
+.cmdk-empty { padding: 28px; text-align: center; color: var(--muted); font-size: 13px; }
+.cmdk-foot {
+  border-top: 1px solid var(--line); padding: 8px 18px; font-size: 11px;
+  color: var(--faint); display: flex; gap: 14px;
+}
+.cmdk-foot kbd {
+  font: inherit; font-size: 10px; border: 1px solid var(--line);
+  padding: 1px 5px; color: var(--muted);
+}
+
+/* ------------------------------------------------------------ pull-to-refresh */
+.ptr {
+  position: absolute; left: 50%; top: 0; transform: translate(-50%, -100%);
+  display: grid; place-items: center; width: 32px; height: 32px;
+  color: var(--accent); pointer-events: none; z-index: 40;
+}
+.ptr svg { width: 18px; height: 18px; }
+
+/* ==========================================================================
+   Reduced motion
+   A hard requirement, not a nicety: vestibular disorders are common enough
+   that any product used daily by a whole company has to honour this. Feedback
+   still happens — it just stops moving.
+   ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .spinner { animation: spin 1.2s linear infinite !important; }
+  .skeleton { animation: none !important; background: var(--n200); }
+  .pulse { animation: none !important; }
+  .cal .d:hover { transform: none; }
+  ::view-transition-old(page), ::view-transition-new(page) { animation: none !important; }
+}
