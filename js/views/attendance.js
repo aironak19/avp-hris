@@ -35,6 +35,23 @@ var Punch = (function () {
       footer: null
     });
   }
+
+  /** Full-screen success moment: check mark, the facts, and a way back. */
+  function success(dir, res) {
+    var title = dir === 'in' ? 'Checked in' : 'Checked out';
+    var line = dir === 'in'
+      ? A.esc(res.time) + (res.location ? ' · ' + A.esc(res.location) : '') + (res.lateMinutes ? ' · late by ' + A.hm(res.lateMinutes) : ' · on time')
+      : A.esc(res.time) + ' · ' + A.esc(res.worked) + ' worked';
+    A.modal({
+      title: '',
+      body: '<div style="text-align:center;padding:12px 0 6px"><div class="check-burst">' + icon('check') + '</div>' +
+        '<h2 style="margin:18px 0 4px">' + title + '</h2><div class="muted">' + line + '</div>' +
+        (dir === 'in' && !res.lateMinutes ? '<div class="tag tag-ok mt2">Have a great day</div>' : '') + '</div>',
+      footer: '<button class="btn btn-primary btn-block" data-close="btn">Done</button>'
+    });
+    if (navigator.vibrate) { try { navigator.vibrate(dir === 'in' ? [12, 40, 12] : 12); } catch (e) {} }
+    setTimeout(function () { var bd = document.querySelector('#modal-root .backdrop'); if (bd) A.close(); }, 3200);
+  }
   function step(t) { var e = document.getElementById('pg-text'); if (e) e.textContent = t; }
 
   /** Full punch flow. dir = 'in' | 'out'. */
@@ -47,13 +64,8 @@ var Punch = (function () {
           lat: pos.lat, lng: pos.lng, accuracy: pos.accuracy,
           device: navigator.userAgent, deviceId: deviceId()
         }).then(function (res) {
-          A.close();
-          if (dir === 'in') {
-            A.toast('Checked in at ' + res.time + (res.location ? ' · ' + res.location : '') +
-              (res.lateMinutes ? ' · late by ' + A.hm(res.lateMinutes) : ''), 'ok', 5000);
-          } else {
-            A.toast('Checked out at ' + res.time + ' · ' + res.worked + ' worked', 'ok', 5000);
-          }
+          A.close(true);
+          success(dir, res);
           return res;
         }).catch(function (e) {
           A.close();
@@ -125,10 +137,10 @@ var Punch = (function () {
       var tab = params.tab || 'today';
       var month = params.month || A.monthKey();
       var head =
-        '<div class="spread wrap" style="align-items:flex-end;margin-bottom:20px">' +
-        '<div><div class="kicker">Geofenced attendance</div><h1 style="margin:0">Attendance</h1></div>' +
+        '<div class="page-head">' +
+        '<div><div class="kicker">Geofenced attendance</div><h1>Attendance</h1></div>' +
         '<div class="seg" style="width:auto">' +
-        tabBtn('today', tab, 'Today') + tabBtn('month', tab, 'Register') + tabBtn('regularize', tab, 'Regularize') +
+        tabBtn('today', tab, 'Today') + tabBtn('month', tab, 'Register') + tabBtn('regularize', tab, 'Regularise') +
         '</div></div>';
 
       if (tab === 'month') return A.api('att.month', { month: month }).then(function (m) { return head + monthTab(m); });
@@ -171,47 +183,56 @@ var Punch = (function () {
   }
 
   /* ------------------------------------------------------------- today tab */
+  function hhmmToMin(v) { var p = String(v || '').split(':'); return (+p[0] || 0) * 60 + (+p[1] || 0); }
   function todayTab(t) {
-    var d = t.day;
+    var d = t.day || {};
     var done = d.checkIn && d.checkOut;
+    var shiftLen = Math.max(60, hhmmToMin(t.shift.end) - hhmmToMin(t.shift.start));
+    var worked = done ? (d.workedMinutes || 0) : (d.checkIn ? Math.max(0, (new Date().getHours() * 60 + new Date().getMinutes()) - hhmmToMin(d.checkIn)) : 0);
+    var pct = Math.min(100, Math.round(worked / shiftLen * 100));
     var locs = t.locations.map(function (l) {
       return '<div class="rowline" data-loc="' + l.id + '" data-name="' + A.esc(l.name) + '" data-lat="' + l.lat + '" data-lng="' + l.lng + '" data-radius="' + l.radius + '">' +
-        icon('pin') + '<div class="grow"><div style="font-size:14px;font-weight:600">' + A.esc(l.name) + '</div>' +
+        '<div class="avatar sm ghost">' + icon('mappin') + '</div><div class="grow"><div style="font-size:14px;font-weight:600">' + A.esc(l.name) + '</div>' +
         '<div class="small muted">' + A.esc(l.address || '') + ' · fence ' + l.radius + ' m</div></div>' +
         '<span class="tag tag-neutral dist">—</span></div>';
     }).join('');
+    var ringInner = d.checkIn ? '<b id="ringWorked">' + A.hm(worked) + '</b><small>' + (done ? 'worked' : 'so far · ' + pct + '%') + '</small>' : '<b>' + A.esc(t.shift.start) + '</b><small>shift start</small>';
+    var button = done
+      ? '<button class="btn btn-secondary btn-xl" disabled>' + icon('checkcircle') + ' Day complete</button>'
+      : (d.checkIn
+        ? '<button class="btn btn-dark btn-xl" data-act="checkout" id="punchBtn">' + icon('logout') + ' Check out</button>'
+        : '<button class="btn btn-primary btn-xl" data-act="checkin" id="punchBtn">' + icon('clock') + ' Check in</button>');
 
     return '' +
       '<div class="split wide">' +
       '<div>' +
       '  <div class="punch">' +
-      '    <div class="spread"><div class="stat-label">' + A.esc(t.weekday + ', ' + t.prettyDate) + '</div>' + A.statusTag(d.status) + '</div>' +
-      '    <div class="clock" id="clock">--:--</div>' +
-      '    <div class="geo wait" id="geoStatus"><span class="pulse"></span><span id="geoText">Locating you…</span>' +
-      '      <button class="btn btn-ghost btn-sm" data-act="refreshLoc" style="margin-left:auto">' + icon('refresh') + '</button></div>' +
-      (done
-        ? '<button class="btn btn-secondary btn-xl" disabled>' + icon('check') + ' Day complete</button>'
-        : (d.checkIn
-          ? '<button class="btn btn-dark btn-xl" data-act="checkout" id="punchBtn">' + icon('clock') + ' Check out</button>'
-          : '<button class="btn btn-primary btn-xl" data-act="checkin" id="punchBtn">' + icon('clock') + ' Check in</button>')) +
+      '    <div class="spread wrap"><div><div class="stat-label">' + A.esc(t.weekday + ', ' + t.prettyDate) + '</div>' +
+      '    <div class="clock" id="clock">--:--<small>--</small></div></div>' + A.statusTag(d.status) + '</div>' +
+      '    <div class="row wrap" style="gap:22px;align-items:center">' +
+      A.ring(d.checkIn ? pct : 0, ringInner, done ? 'ok' : '') +
+      '      <div class="grow stack" style="gap:10px;min-width:220px">' +
+      '        <div class="geo wait" id="geoStatus"><span class="pulse"></span><span id="geoText" class="grow">Locating you…</span>' +
+      '          <button class="iconbtn sm" data-act="refreshLoc" title="Refresh location">' + icon('refresh') + '</button></div>' +
+      button +
+      '      </div></div>' +
       '    <div class="punchgrid">' +
-      '      <div><div class="stat-label">Check in</div><div style="font-weight:800;font-size:22px;margin-top:4px">' + (d.checkIn || '—') + '</div>' +
-      '        <div class="small muted">' + (d.checkIn ? (d.lateMinutes ? 'Late by ' + A.hm(d.lateMinutes) : 'On time') + (d.locationName ? ' · ' + A.esc(d.locationName) : '') : 'Shift starts ' + t.shift.start) + '</div></div>' +
-      '      <div><div class="stat-label">Check out</div><div style="font-weight:800;font-size:22px;margin-top:4px">' + (d.checkOut || '—') + '</div>' +
-      '        <div class="small muted">' + (d.checkOut ? A.hm(d.workedMinutes) + ' worked' : 'Shift ends ' + t.shift.end) + '</div></div>' +
+      '      <div><div class="stat-label">Check in</div><div style="font-weight:800;font-size:22px;margin-top:4px;font-family:var(--font-display)">' + (d.checkIn || '—') + '</div>' +
+      '        <div class="small muted">' + (d.checkIn ? (d.lateMinutes ? 'Late by ' + A.hm(d.lateMinutes) : 'On time') + (d.locationName ? ' · ' + A.esc(d.locationName) : '') : 'Shift starts ' + A.esc(t.shift.start)) + '</div></div>' +
+      '      <div><div class="stat-label">Check out</div><div style="font-weight:800;font-size:22px;margin-top:4px;font-family:var(--font-display)">' + (d.checkOut || '—') + '</div>' +
+      '        <div class="small muted">' + (d.checkOut ? A.hm(d.workedMinutes) + ' worked' : 'Shift ends ' + A.esc(t.shift.end)) + '</div></div>' +
       '    </div>' +
       (d.status === 'HOLIDAY' || d.status === 'WEEKLY_OFF'
-        ? '<div class="small muted">Today is a ' + A.STATUS_LABEL[d.status].toLowerCase() + '. If you work today, claim a compensatory off from the Leave screen.</div>' : '') +
+        ? '<div class="geo">' + icon('sun') + '<span>Today is a ' + A.STATUS_LABEL[d.status].toLowerCase() + '. If you work today, claim a compensatory off from the Leave screen.</span></div>' : '') +
       '  </div>' +
       '  <div class="sect mt4"><h3>This month</h3><a href="#/attendance?tab=month">Open register</a></div>' +
-      summaryStrip(t.monthSummary) +
+      '  <div class="mt2">' + summaryStrip(t.monthSummary) + '</div>' +
       '</div>' +
-      '<div>' +
-      '  <div class="sect"><h3>Your sites</h3></div>' + (locs || '<div class="empty">No location mapped yet — ask HR.</div>') +
-      '  <div class="sect mt4"><h3>How it works</h3></div>' +
-      '  <div class="panel tight small" style="line-height:1.6">' +
-      '    Attendance is marked from your phone or laptop using GPS. You must be inside the boundary of a site mapped to you. ' +
-      'Working elsewhere? Mark it through <b>Regularize</b> and your manager approves it. Shift is ' +
+      '<div class="stack" style="gap:20px">' +
+      '  <div class="panel"><div class="sect"><h3>Your sites</h3></div><div class="mt1">' + (locs || A.emptyState('mappin', 'No location mapped yet — ask HR.')) + '</div></div>' +
+      '  <div class="panel soft small" style="line-height:1.6">' +
+      '    <b>How it works.</b> Attendance is marked from your phone or laptop using GPS. You must be inside the boundary of a site mapped to you. ' +
+      'Working elsewhere? Mark it through <b>Regularise</b> and your manager approves it. Shift is ' +
       A.esc(t.shift.start) + '–' + A.esc(t.shift.end) + ' with ' + t.shift.grace + ' minutes grace.' +
       '  </div>' +
       '</div></div>';
@@ -219,11 +240,14 @@ var Punch = (function () {
 
   function summaryStrip(s) {
     if (!s) return '';
+    function card(label, v, sub, ic, tone) {
+      return '<div><div class="stat-ic ' + tone + '">' + icon(ic) + '</div><div class="stat-label">' + label + '</div><div class="stat-value"><span data-countup="' + v + '">' + v + '</span></div><div class="stat-sub">' + sub + '</div></div>';
+    }
     return '<div class="statstrip">' +
-      '<div><div class="stat-label">Present</div><div class="stat-value">' + (s.present + s.halfDay) + '</div><div class="stat-sub">' + s.halfDay + ' half day(s)</div></div>' +
-      '<div><div class="stat-label">Leave</div><div class="stat-value">' + s.leave + '</div><div class="stat-sub">approved</div></div>' +
-      '<div><div class="stat-label">Absent</div><div class="stat-value">' + s.absent + '</div><div class="stat-sub">' + s.missingPunch + ' missing punch</div></div>' +
-      '<div><div class="stat-label">Hours</div><div class="stat-value">' + s.workedHours + '</div><div class="stat-sub">' + s.late + ' late mark(s)</div></div>' +
+      card('Present', (s.present || 0) + (s.halfDay || 0), (s.halfDay || 0) + ' half day(s)', 'checkcircle', 'ok') +
+      card('Leave', s.leave || 0, 'approved', 'calendar', 'neutral') +
+      card('Absent', s.absent || 0, (s.missingPunch || 0) + ' missing punch', 'xcircle', (s.absent ? 'warn' : 'neutral')) +
+      card('Hours', s.workedHours || 0, (s.late || 0) + ' late mark(s)', 'activity', 'info') +
       '</div>';
   }
 
@@ -233,8 +257,8 @@ var Punch = (function () {
       var el = document.getElementById('clock');
       if (!el) { clearInterval(live); return; }
       var n = new Date();
-      el.textContent = String(n.getHours()).padStart(2, '0') + ':' + String(n.getMinutes()).padStart(2, '0') +
-        ':' + String(n.getSeconds()).padStart(2, '0');
+      el.innerHTML = String(n.getHours()).padStart(2, '0') + ':' + String(n.getMinutes()).padStart(2, '0') +
+        '<small>' + String(n.getSeconds()).padStart(2, '0') + '</small>';
     };
     tick();
     live = setInterval(tick, 1000);
@@ -247,6 +271,7 @@ var Punch = (function () {
     if (!box) return;
     box.className = 'geo wait';
     if (txt) txt.textContent = 'Locating you…';
+    var pulse = box.querySelector('.pulse'); if (pulse) pulse.style.display = '';
     A.getPosition({ maximumAge: force ? 0 : 30000 }).then(function (pos) {
       var nodes = document.querySelectorAll('[data-loc]');
       var best = null;
@@ -269,6 +294,7 @@ var Punch = (function () {
         return;
       }
       box.className = 'geo ' + (best.ok ? 'ok' : 'bad');
+      if (pulse) pulse.style.display = 'none';
       if (txt) {
         txt.textContent = best.ok
           ? 'Inside ' + best.name + ' · ' + best.dist + ' m from centre (±' + Math.round(pos.accuracy) + ' m)'
@@ -277,6 +303,7 @@ var Punch = (function () {
     }).catch(function (e) {
       if (!box.isConnected) return;
       box.className = 'geo bad';
+      if (pulse) pulse.style.display = 'none';
       if (txt) txt.textContent = e.message;
     });
   }
@@ -295,21 +322,31 @@ var Punch = (function () {
     });
 
     return '' +
-      '<div class="spread" style="margin-bottom:14px">' +
+      '<div class="spread wrap" style="margin-bottom:14px">' +
       '<div class="row"><button class="iconbtn" data-act="prevMonth">' + icon('back') + '</button>' +
-      '<h3 style="margin:0">' + A.esc(m.label) + '</h3>' +
+      '<h3 style="margin:0;min-width:120px;text-align:center">' + A.esc(m.label) + '</h3>' +
       '<button class="iconbtn" data-act="nextMonth">' + icon('chevron') + '</button></div>' +
       '<div class="small muted">' + A.esc(m.employee.name) + '</div></div>' +
       summaryStrip(m.summary) +
-      '<div class="mt3 cal">' + ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(function (x) {
+      '<div class="split wide mt3"><div class="panel"><div class="cal">' + ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(function (x) {
         return '<div class="h">' + x + '</div>';
       }).join('') + cells + '</div>' +
       '<div class="legend">' +
-      leg('var(--ok-bg)', 'Present') + leg('#fdf3dd', 'Half / missing punch') + leg('var(--err-bg)', 'Absent') +
-      leg('var(--a200)', 'Leave') + leg('var(--n200)', 'Weekly off') + leg('var(--n300)', 'Holiday') +
-      '</div>' +
+      leg('var(--ok-bg)', 'Present') + leg('var(--warn-bg)', 'Half / missing punch') + leg('var(--err-bg)', 'Absent') +
+      leg('var(--a200)', 'Leave') + leg('var(--info-bg)', 'On duty / WFH') + leg('var(--sunken)', 'Weekly off') + leg('var(--n200)', 'Holiday') +
+      '</div></div>' +
+      '<div class="panel"><div class="sect"><h3>Worked hours</h3><span class="small muted">per day</span></div>' +
+      A.spark(m.days.filter(function (d) { return d.date <= A.todayStr(); }).map(function (d) { return Math.round((d.workedMinutes || 0) / 6) / 10; }), { h: 60, color: 'var(--ok)' }) +
+      '<div class="sect mt3"><h3>Needs attention</h3></div>' +
+      (function () {
+        var bad = m.days.filter(function (d) { return d.date <= A.todayStr() && ['ABSENT', 'MISSING_PUNCH'].indexOf(d.status) > -1; });
+        return bad.length ? bad.slice(0, 6).map(function (d) {
+          return '<div class="rowline"><div class="grow"><div style="font-size:14px;font-weight:600">' + A.pretty(d.date) + '</div><div class="small muted">' + A.STATUS_LABEL[d.status] + '</div></div>' +
+            '<button class="btn btn-secondary btn-sm" data-act="regFor" data-date="' + d.date + '">Regularise</button></div>';
+        }).join('') : A.emptyState('checkcircle', 'Nothing to fix this month.');
+      })() + '</div></div>' +
       '<div class="sect mt4"><h3>Daily log</h3></div>' +
-      '<div class="tablewrap"><table class="tbl"><thead><tr><th>Date</th><th>Day</th><th>Status</th><th>In</th><th>Out</th><th>Worked</th><th>Late</th><th>Location</th><th></th></tr></thead><tbody>' +
+      '<div class="tablewrap mt2"><table class="tbl"><thead><tr><th>Date</th><th>Day</th><th>Status</th><th>In</th><th>Out</th><th>Worked</th><th>Late</th><th>Location</th><th></th></tr></thead><tbody>' +
       m.days.map(function (d) {
         return '<tr><td class="nowrap">' + A.pretty(d.date) + '</td><td>' + d.weekday + '</td><td>' + A.statusTag(d.status) + '</td>' +
           '<td>' + (d.checkIn || '—') + '</td><td>' + (d.checkOut || '—') + '</td>' +
@@ -317,7 +354,7 @@ var Punch = (function () {
           '<td>' + (d.lateMinutes ? A.hm(d.lateMinutes) : '—') + '</td>' +
           '<td class="small">' + A.esc(d.locationName || d.remarks || '') + '</td>' +
           '<td class="right">' + ((d.status === 'ABSENT' || d.status === 'MISSING_PUNCH' || d.status === 'NOT_MARKED') && d.date <= A.todayStr()
-            ? '<button class="btn btn-ghost btn-sm" data-act="regFor" data-date="' + d.date + '">Regularize</button>' : '') + '</td></tr>';
+            ? '<button class="btn btn-ghost btn-sm" data-act="regFor" data-date="' + d.date + '">Regularise</button>' : '') + '</td></tr>';
       }).join('') + '</tbody></table></div>';
   }
 
@@ -342,9 +379,9 @@ var Punch = (function () {
           kv('Distance from centre', d.distance !== null && d.distance !== undefined ? d.distance + ' m' : '—') +
           kv('Remarks', d.remarks || '—') + '</div>',
         footer: (d.date <= A.todayStr() && ['ABSENT', 'MISSING_PUNCH', 'NOT_MARKED', 'HALF_DAY'].indexOf(d.status) > -1)
-          ? '<button class="btn btn-secondary" onclick="App.close()">Close</button>' +
-          '<button class="btn btn-primary" id="di-reg">Regularize this day</button>'
-          : '<button class="btn btn-secondary" onclick="App.close()">Close</button>',
+          ? '<button class="btn btn-secondary" data-close="btn">Close</button>' +
+          '<button class="btn btn-primary" id="di-reg">Regularise this day</button>'
+          : '<button class="btn btn-secondary" data-close="btn">Close</button>',
         onMount: function (root) {
           var b = root.querySelector('#di-reg');
           if (b) b.onclick = function () { A.close(); regularizeForm(date); };
@@ -362,9 +399,9 @@ var Punch = (function () {
   function regularizeTab(list, month) {
     return '' +
       '<div class="split wide">' +
-      '<div><div class="sect"><h3>My regularization requests</h3>' +
+      '<div><div class="sect"><h3>My regularisation requests</h3>' +
       '<button class="btn btn-primary btn-sm" data-act="newReg">' + icon('plus') + ' New request</button></div>' +
-      (list.length ? '<div class="tablewrap"><table class="tbl"><thead><tr><th>Date</th><th>Type</th><th>In</th><th>Out</th><th>Reason</th><th>Status</th><th>Approver</th><th></th></tr></thead><tbody>' +
+      (list.length ? '<div class="tablewrap mt2"><table class="tbl"><thead><tr><th>Date</th><th>Type</th><th>In</th><th>Out</th><th>Reason</th><th>Status</th><th>Approver</th><th></th></tr></thead><tbody>' +
         list.map(function (r) {
           return '<tr><td class="nowrap">' + A.pretty(r.date) + '</td>' +
             '<td class="small">' + A.esc(String(r.regType).replace(/_/g, ' ')) + '</td>' +
@@ -374,14 +411,13 @@ var Punch = (function () {
             '<td class="small">' + A.esc(r.approverName || '') + '</td>' +
             '<td class="right">' + (r.status === 'PENDING' ? '<button class="btn btn-ghost btn-sm" data-act="cancelReg" data-id="' + r.id + '">Withdraw</button>' : '') + '</td></tr>';
         }).join('') + '</tbody></table></div>'
-        : '<div class="empty">No regularization requests yet.</div>') +
+        : A.emptyState('edit', 'No regularisation requests yet.')) +
       '</div>' +
-      '<div><div class="sect"><h3>Rules</h3></div>' +
-      '<div class="panel tight small" style="line-height:1.65">' +
-      'Use regularization when you forgot to punch, were on site or client work, or worked from outside the mapped boundary. ' +
+      '<div class="stack" style="gap:20px"><div class="panel soft small" style="line-height:1.65">' +
+      '<b>Rules.</b> Use regularisation when you forgot to punch, were on site or client work, or worked from outside the mapped boundary. ' +
       'Requests go to your reporting manager. HR sets the monthly limit and how far back you can go.' +
       '</div>' +
-      '<div class="sect mt4"><h3>Days that need attention</h3></div>' +
+      '<div class="panel"><div class="sect"><h3>Days that need attention</h3></div>' +
       (function () {
         var bad = month.days.filter(function (d) {
           return d.date <= A.todayStr() && ['ABSENT', 'MISSING_PUNCH'].indexOf(d.status) > -1;
@@ -389,15 +425,15 @@ var Punch = (function () {
         return bad.length ? bad.map(function (d) {
           return '<div class="rowline"><div class="grow"><div style="font-size:14px;font-weight:600">' + A.pretty(d.date) + '</div>' +
             '<div class="small muted">' + A.STATUS_LABEL[d.status] + '</div></div>' +
-            '<button class="btn btn-secondary btn-sm" data-act="regFor" data-date="' + d.date + '">Regularize</button></div>';
-        }).join('') : '<div class="empty">Nothing pending this month.</div>';
+            '<button class="btn btn-secondary btn-sm" data-act="regFor" data-date="' + d.date + '">Regularise</button></div>';
+        }).join('') : A.emptyState('checkcircle', 'Nothing pending this month.');
       })() +
-      '</div></div>';
+      '</div></div></div>';
   }
 
   function regularizeForm(date) {
     A.modal({
-      title: 'Regularize attendance',
+      title: 'Regularise attendance',
       body: '<form id="rgf">' +
         '<div class="field"><label>Date</label><input class="input" type="date" name="date" value="' + (date || A.todayStr()) + '" max="' + A.todayStr() + '" required></div>' +
         '<div class="field"><label>Reason type</label><select class="input" name="regType">' +
@@ -411,7 +447,7 @@ var Punch = (function () {
         '<div class="field"><label>Check-out time</label><input class="input" type="time" name="checkOut" value="18:30"></div></div>' +
         '<div class="field"><label>Reason</label><textarea class="input" name="reason" placeholder="Explain briefly — your manager sees this." required></textarea></div>' +
         '</form>',
-      footer: '<button class="btn btn-secondary" onclick="App.close()">Cancel</button>' +
+      footer: '<button class="btn btn-secondary" data-close="btn">Cancel</button>' +
         '<button class="btn btn-primary" id="rg-send">Send for approval</button>',
       onMount: function (root) {
         root.querySelector('#rg-send').onclick = function () {

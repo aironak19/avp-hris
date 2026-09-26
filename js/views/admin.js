@@ -6,16 +6,34 @@
   var A = App;
   /* Built-in tabs: [id, label, group]. Modules add theirs with App.registerAdminTab(). */
   var TABS = [
-    ['data', 'Overview', 'Workforce'], ['onboarding', 'Onboarding', 'Workforce'],
-    ['locations', 'Locations & geofence', 'Time'], ['holidays', 'Holiday calendar', 'Time'], ['leavetypes', 'Leave types', 'Time'], ['devices', 'Device anomalies', 'Time'],
-    /* 'letters' moved to ViewsLetters.html (v1.6.0) — it registers itself via App.registerAdminTab */
-    ['settings', 'Policy settings', 'System'], ['audit', 'Audit trail', 'System']
+    ['data', 'Overview', 'Workforce', 'grid', 'Live numbers across every module', '*admin'],
+    ['onboarding', 'Onboarding', 'Workforce', 'usercheck', 'Probation confirmations & document review', 'onboarding.review'],
+    ['locations', 'Locations & geofence', 'Time', 'mappin', 'Sites, radii, shifts and who is mapped where', 'admin.settings'],
+    ['holidays', 'Holiday calendar', 'Time', 'calendar', 'Declare and edit holidays by financial year', 'leave.manage'],
+    ['leavetypes', 'Leave types', 'Time', 'layers', 'Paid, unpaid and special leave rules', 'leave.manage'],
+    ['devices', 'Device anomalies', 'Time', 'smartphone', 'One device punching for many people', 'attendance.manage'],
+    ['settings', 'Policy settings', 'System', 'sliders', 'Organisation, leave, attendance and payroll policy', 'admin.settings'],
+    ['audit', 'Audit trail', 'System', 'history', 'Who changed what, and when', 'admin.audit']
   ];
   var GROUPS = ['Workforce', 'Time', 'Pay', 'Growth', 'Engagement', 'Documents', 'System'];
-
+  /* Registered tabs: icon, blurb and the capability that unlocks them. */
+  var META = {
+    exit: ['logout', 'Resignations, clearance, F&F and relieving', 'exit.manage'], recruitment: ['briefcase', 'Jobs, candidates, interviews and offers', 'recruitment.manage'],
+    assets: ['box', 'Laptops, phones, licences — issue and return', 'assets.manage'], expenses: ['receipt', 'Claims awaiting final approval and payment', 'expenses.manage'],
+    payroll: ['wallet', 'Salary structures, monthly runs and payslips', 'payroll.manage'], performance: ['target', 'Appraisal cycles and calibration', 'performance.manage'],
+    helpdesk: ['lifebuoy', 'Ticket queue, assignment and SLAs', 'helpdesk.manage'], notices: ['megaphone', 'Notices, policies and acknowledgements', 'notices.manage'],
+    letters: ['filetext', 'Templates, generation and e-signature', 'letters.manage'], roles: ['shield', 'Define roles, permissions and preview as anyone', 'admin.roles']
+  };
+  function allowed(cap) {
+    if (!cap) return true;
+    if (A.S.user.isHR) return true;
+    if (cap === '*admin') return A.hasAdminAccess();
+    return A.can(cap);
+  }
   function allTabs() {
-    var built = TABS.map(function (t) { return { id: t[0], label: t[1], group: t[2] }; });
-    return built.concat(A.S.adminTabs.map(function (d) { return { id: d.id, label: d.label, group: d.group || 'Engagement', def: d }; }));
+    var built = TABS.map(function (t) { return { id: t[0], label: t[1], group: t[2], icon: t[3], blurb: t[4], cap: t[5] }; });
+    var reg = A.S.adminTabs.map(function (d) { var m = META[d.id] || ['settings', '', null]; return { id: d.id, label: d.label, group: d.group || 'Engagement', def: d, icon: d.icon || m[0], blurb: d.blurb || m[1], cap: d.cap || m[2] }; });
+    return built.concat(reg).filter(function (t) { return allowed(t.cap); });
   }
 
   A.registerView('admin', {
@@ -27,17 +45,21 @@
       tab = cur.id;
       var groups = GROUPS.filter(function (g) { return tabs.some(function (t) { return t.group === g; }); });
       var head =
-        '<div class="spread wrap" style="align-items:flex-end;margin-bottom:14px">' +
-        '<div><div class="kicker">Workspace configuration</div><h1 style="margin:0">Administration</h1></div></div>' +
-        '<div class="seg" style="margin-bottom:10px;overflow:auto">' +
-        groups.map(function (g) {
-          var first = tabs.filter(function (t) { return t.group === g; })[0];
-          return '<button data-act="tab" data-tab="' + (g === cur.group ? tab : first.id) + '" class="' + (g === cur.group ? 'on' : '') + '">' + A.esc(g) + '</button>';
-        }).join('') + '</div>' +
-        '<div class="row wrap" style="gap:6px;margin-bottom:22px">' +
-        tabs.filter(function (t) { return t.group === cur.group; }).map(function (t) {
-          return '<span class="tag ' + (t.id === tab ? 'tag-dark' : 'tag-neutral') + '" data-act="tab" data-tab="' + t.id + '" style="cursor:pointer;padding:6px 12px;font-size:12px">' + A.esc(t.label) + '</span>';
-        }).join('') + '</div>';
+        '<div class="page-head">' +
+        '<div><div class="kicker">' + (tab === 'data' ? 'Command centre' : A.esc(cur.group)) + '</div><h1>' + (tab === 'data' ? 'Administration' : A.esc(cur.label)) + '</h1>' +
+        (tab !== 'data' && cur.blurb ? '<div class="sub">' + A.esc(cur.blurb) + '</div>' : '') + '</div>' +
+        '<div class="row wrap">' + (tab !== 'data' ? '<button class="btn btn-secondary btn-sm" data-act="tab" data-tab="data">' + icon('grid') + ' Overview</button>' : '') +
+        '<button class="btn btn-secondary btn-sm" data-act="palette">' + icon('search') + ' Jump to… <span class="kbd">⌘K</span></button></div></div>' +
+        (tab === 'data' ? '' :
+          '<div class="seg noprint" style="margin-bottom:8px;width:auto;max-width:100%">' +
+          groups.map(function (g) {
+            var first = tabs.filter(function (t) { return t.group === g; })[0];
+            return '<button data-act="tab" data-tab="' + (g === cur.group ? tab : first.id) + '" class="' + (g === cur.group ? 'on' : '') + '">' + A.esc(g) + '</button>';
+          }).join('') + '</div>' +
+          '<div class="subnav noprint">' +
+          tabs.filter(function (t) { return t.group === cur.group; }).map(function (t) {
+            return '<button data-act="tab" data-tab="' + t.id + '" class="' + (t.id === tab ? 'on' : '') + '">' + A.esc(t.label) + '</button>';
+          }).join('') + '</div>');
 
       A.S.adminActive = cur.def || null;
       if (cur.def) return Promise.resolve(cur.def.render(params)).then(function (html) { return head + html; });
@@ -46,7 +68,7 @@
       if (tab === 'leavetypes') return A.api('leave.types').then(function (l) { return head + leaveTypesTab(l); });
       if (tab === 'settings') return A.api('admin.settings').then(function (g) { return head + settingsTab(g); });
       if (tab === 'audit') return A.api('admin.audit', { limit: 200 }).then(function (l) { return head + auditTab(l); });
-      if (tab === 'data') return A.api('admin.stats').then(function (s) { return head + dataTab(s); });
+      if (tab === 'data') return A.api('admin.stats').catch(function () { return null; }).then(function (s) { return head + dataTab(s, tabs); });
       if (tab === 'devices') return A.api('admin.deviceAnomalies', { days: params.days ? parseInt(params.days, 10) : 30 }).then(function (r) { return head + devicesTab(r); });
       if (tab === 'onboarding') return Promise.all([A.api('admin.probationList'), A.api('admin.documentsQueue')])
         .then(function (r) { return head + onboardingTab(r[0], r[1]); });
@@ -54,6 +76,7 @@
     },
     actions: {
       tab: function (el) { A.go('admin', { tab: el.getAttribute('data-tab') }); },
+      palette: function () { HRIS.palette && HRIS.palette.open(); },
       addLoc: function () { locationForm(null); },
       editLoc: function (el) { locationForm(JSON.parse(el.getAttribute('data-json'))); },
       delLoc: function (el) {
@@ -162,7 +185,7 @@
         '<div class="field"><label>Late-mark grace (minutes)</label><input class="input" type="number" name="grace" value="' + (loc.grace || 15) + '"></div>' +
         '<label class="row small"><input type="checkbox" name="active" ' + (loc.active === false ? '' : 'checked') + '> Active</label>' +
         '</form>',
-      footer: '<button class="btn btn-secondary" onclick="App.close()">Cancel</button>' +
+      footer: '<button class="btn btn-secondary" data-close="btn">Cancel</button>' +
         '<button class="btn btn-primary" id="loc-save">Save location</button>',
       onMount: function (root) {
         root.querySelector('#locHere').onclick = function () {
@@ -208,7 +231,7 @@
               '<div class="grow"><div style="font-size:14px;font-weight:600">' + A.esc(p.name) + '</div>' +
               '<div class="small muted">' + A.esc(p.code) + ' · ' + A.esc(p.designation || '') + ' · now: ' + A.esc(p.locationName || 'unassigned') + '</div></div></label>';
           }).join('') + '</div>',
-        footer: '<button class="btn btn-secondary" onclick="App.close()">Cancel</button>' +
+        footer: '<button class="btn btn-secondary" data-close="btn">Cancel</button>' +
           '<button class="btn btn-primary" id="as-save">Assign selected</button>',
         onMount: function (root) {
           root.querySelector('#as-save').onclick = function () {
@@ -312,43 +335,64 @@
   }
 
   /* ------------------------------------------------------------------ data */
-  function dataTab(s) {
-    function tile(label, value, sub, route, params) {
-      return '<div' + (route ? ' data-act="goto" data-route="' + route + '" data-params=\'' + A.esc(JSON.stringify(params || {})) + '\' style="cursor:pointer"' : '') + '>' +
-        '<div class="stat-label">' + A.esc(label) + '</div><div class="stat-value">' + value + '</div><div class="stat-sub">' + A.esc(sub || '') + '</div></div>';
+  function dataTab(s, tabs) {
+    var u = A.S.user;
+    function kpi(label, value, sub, ic, tone, route, params) {
+      return '<div data-act="goto" data-route="' + route + '" data-params=\'' + A.esc(JSON.stringify(params || {})) + '\'>' +
+        '<div class="stat-ic ' + tone + '">' + icon(ic) + '</div><div class="stat-label">' + A.esc(label) + '</div>' +
+        '<div class="stat-value"><span data-countup="' + value + '">' + value + '</span></div><div class="stat-sub">' + A.esc(sub || '') + '</div></div>';
     }
-    return '<div class="statstrip">' +
-      tile('Headcount', String(s.headcount), s.probation + ' on probation · ' + s.exited + ' exited', 'people') +
-      tile('Present today', String(s.today.present), s.today.absent + ' absent · ' + s.today.leave + ' on leave', 'reports', { tab: 'today' }) +
-      tile('Pending approvals', String(s.pendingLeave + s.pendingRegularization + (s.pendingExpenses || 0)), s.pendingLeave + ' leave · ' + s.pendingRegularization + ' regularization · ' + (s.pendingExpenses || 0) + ' expense', 'approvals') +
-      tile('Geofenced sites', s.geofenced + ' <small>of ' + s.locations + '</small>', 'with coordinates', 'admin', { tab: 'locations' }) +
-      '</div>' +
-      '<div class="statstrip mt2" style="border-top:0">' +
-      tile('Helpdesk', String(s.openTickets || 0), 'open tickets', 'admin', { tab: 'helpdesk' }) +
-      tile('Hiring', String(s.openJobs || 0), 'open positions', 'admin', { tab: 'recruitment' }) +
-      tile('Exits in progress', String(s.exitsInProgress || 0), 'resignations being processed', 'admin', { tab: 'exit' }) +
-      tile('Payroll readiness', (s.missingSalaryStructures ? '<span style="color:var(--accent)">' + s.missingSalaryStructures + '</span>' : '0'), 'employees without a salary structure', 'admin', { tab: 'payroll' }) +
-      '</div>' +
-      '<div class="split even mt4"><div>' +
-      '<div class="sect"><h3>Employee data</h3></div>' +
-      '<div class="panel tight"><div style="font-size:14px;font-weight:600">Re-sync from the source spreadsheet</div>' +
-      '<p class="small muted mt1">Adds employees that are new in the master sheet and refreshes names, departments, designations and dates. Passwords, roles, and site mapping are never overwritten.</p>' +
-      '<button class="btn btn-secondary" data-act="importEmp">' + icon('refresh') + ' Import / refresh employees</button></div>' +
-      '<div class="panel tight mt2"><div style="font-size:14px;font-weight:600">Reset a password</div>' +
-      '<p class="small muted mt1">Generates a temporary password the employee must change at next sign-in.</p>' +
-      '<button class="btn btn-secondary" data-act="resetPw">' + icon('user') + ' Reset employee password</button></div>' +
-      '<div class="panel tight mt2"><div style="font-size:14px;font-weight:600">Reporting managers</div>' +
-      '<p class="small muted mt1">Map a manager to several employees at once. Managers approve leave, regularization and expense claims for their team and review their appraisals.</p>' +
-      '<button class="btn btn-secondary" data-act="assignManager">' + icon('users') + ' Assign reporting manager</button></div>' +
-      '</div><div>' +
-      '<div class="sect"><h3>Headcount by department</h3></div>' +
-      s.departments.map(function (d) {
-        var pct = Math.round(d.count / s.headcount * 100);
-        return '<div style="padding:9px 0;border-bottom:1px solid var(--line)">' +
-          '<div class="spread"><span style="font-size:14px">' + A.esc(d.name) + '</span><span style="font-weight:700">' + d.count + '</span></div>' +
-          '<div class="bar thin mt1"><i style="width:' + pct + '%;background:var(--text)"></i></div></div>';
-      }).join('') +
-      '</div></div>';
+    var pendingAll = s ? (s.pendingLeave || 0) + (s.pendingRegularization || 0) + (s.pendingExpenses || 0) : 0;
+    var strip = s ? '<div class="statstrip">' +
+      kpi('Headcount', s.headcount || 0, (s.probation || 0) + ' on probation · ' + (s.exited || 0) + ' exited', 'users', 'neutral', 'people') +
+      kpi('Present today', (s.today && s.today.present) || 0, ((s.today && s.today.absent) || 0) + ' absent · ' + ((s.today && s.today.leave) || 0) + ' on leave', 'checkcircle', 'ok', 'reports', { tab: 'today' }) +
+      kpi('Pending approvals', pendingAll, (s.pendingLeave || 0) + ' leave · ' + (s.pendingRegularization || 0) + ' regularisation · ' + (s.pendingExpenses || 0) + ' expense', 'inbox', pendingAll ? 'warn' : 'ok', 'approvals') +
+      kpi('Open tickets', s.openTickets || 0, (s.openJobs || 0) + ' open positions · ' + (s.exitsInProgress || 0) + ' exits in progress', 'lifebuoy', s.openTickets ? 'info' : 'neutral', 'admin', { tab: 'helpdesk' }) +
+      '</div>' : '';
+    var counts = s ? { onboarding: s.probation || 0, locations: (s.locations || 0) - (s.geofenced || 0), helpdesk: s.openTickets || 0, recruitment: s.openJobs || 0, exit: s.exitsInProgress || 0, payroll: s.missingSalaryStructures || 0, assets: s.assetsIssued || 0, notices: s.noticesPublished || 0, expenses: s.pendingExpenses || 0 } : {};
+    var warn = { payroll: true, locations: true, exit: true, expenses: true };
+    var hub = GROUPS.map(function (g) {
+      var list = tabs.filter(function (t) { return t.group === g && t.id !== 'data'; });
+      if (!list.length) return '';
+      return '<div class="sect mt4"><h3>' + A.esc(g) + '</h3></div><div class="hub mt2">' + list.map(function (t) {
+        var n = counts[t.id];
+        return '<button class="tile" data-act="tab" data-tab="' + t.id + '">' +
+          (n ? '<span class="count ' + (warn[t.id] && n ? 'warn' : '') + '">' + n + '</span>' : '') +
+          '<div class="ic">' + icon(t.icon || 'settings') + '</div><b>' + A.esc(t.label) + '</b><div class="s">' + A.esc(t.blurb || '') + '</div></button>';
+      }).join('') + '</div>';
+    }).join('');
+    var tools = (u.isHR || A.can('people.manage')) ? '<div class="sect mt4"><h3>People tools</h3></div><div class="cards mt2">' +
+      '<div class="panel tight"><div class="row" style="gap:10px"><div class="stat-ic neutral inline">' + icon('refresh') + '</div><div><div style="font-size:14px;font-weight:600">Re-sync from the source spreadsheet</div>' +
+      '<p class="small muted" style="margin:2px 0 0">Adds new employees and refreshes names, departments and dates. Passwords, roles and site mapping are never overwritten.</p></div></div>' +
+      '<button class="btn btn-secondary btn-sm mt2" data-act="importEmp">Import / refresh employees</button></div>' +
+      '<div class="panel tight"><div class="row" style="gap:10px"><div class="stat-ic neutral inline">' + icon('key') + '</div><div><div style="font-size:14px;font-weight:600">Reset a password</div>' +
+      '<p class="small muted" style="margin:2px 0 0">Generates a temporary password the employee must change at next sign-in.</p></div></div>' +
+      '<button class="btn btn-secondary btn-sm mt2" data-act="resetPw">Reset employee password</button></div>' +
+      '<div class="panel tight"><div class="row" style="gap:10px"><div class="stat-ic neutral inline">' + icon('users') + '</div><div><div style="font-size:14px;font-weight:600">Reporting managers</div>' +
+      '<p class="small muted" style="margin:2px 0 0">Map a manager to several employees at once. Managers approve leave, regularisation and expenses for their team.</p></div></div>' +
+      '<button class="btn btn-secondary btn-sm mt2" data-act="assignManager">Assign reporting manager</button></div>' +
+      (A.can('admin.roles') || u.isAdmin ? '<div class="panel tight"><div class="row" style="gap:10px"><div class="stat-ic inline">' + icon('shield') + '</div><div><div style="font-size:14px;font-weight:600">Roles & permissions</div>' +
+        '<p class="small muted" style="margin:2px 0 0">Create roles like Payroll clerk or Recruiter, choose exactly what they can do, and preview the app as anyone.</p></div></div>' +
+        '<button class="btn btn-primary btn-sm mt2" data-act="tab" data-tab="roles">Open roles</button></div>' : '') +
+      '</div>' : '';
+    var depts = s && s.departments && s.departments.length ? '<div class="split mt4"><div class="panel"><div class="sect"><h3>Headcount by department</h3><span class="small muted">' + s.headcount + ' people</span></div><div class="mt1">' +
+      s.departments.map(function (d, i) {
+        var pct = Math.round(d.count / (s.headcount || 1) * 100);
+        return '<div style="padding:9px 0;border-bottom:1px solid var(--hairline)"><div class="spread"><span style="font-size:14px">' + A.esc(d.name) + '</span><span style="font-weight:700">' + d.count + ' <span class="small muted" style="font-weight:400">' + pct + '%</span></span></div>' +
+          '<div class="bar thin mt1"><i style="width:' + pct + '%;background:var(--viz-' + ((i % 6) + 1) + ')"></i></div></div>';
+      }).join('') + '</div></div>' +
+      '<div class="panel"><div class="sect"><h3>Readiness</h3></div><div class="mt1">' +
+      readiness('Geofenced sites', s.geofenced || 0, s.locations || 0, 'admin', { tab: 'locations' }) +
+      readiness('Salary structures', Math.max(0, (s.headcount || 0) - (s.missingSalaryStructures || 0)), s.headcount || 0, 'admin', { tab: 'payroll' }) +
+      readiness('Confirmed employees', Math.max(0, (s.headcount || 0) - (s.probation || 0)), s.headcount || 0, 'admin', { tab: 'onboarding' }) +
+      '</div></div></div>' : '';
+    return strip + hub + tools + depts;
+  }
+  function readiness(label, n, total, route, params) {
+    var pct = total ? Math.round(n / total * 100) : 0;
+    return '<div style="padding:10px 0;border-bottom:1px solid var(--hairline);cursor:pointer" data-act="goto" data-route="' + route + '" data-params=\'' + A.esc(JSON.stringify(params)) + '\'>' +
+      '<div class="spread"><span style="font-size:14px">' + A.esc(label) + '</span><span class="small mono">' + n + ' / ' + total + '</span></div>' +
+      '<div class="bar thin mt1 ' + (pct === 100 ? 'ok' : pct < 50 ? 'warn' : '') + '"><i style="width:' + pct + '%"></i></div></div>';
   }
 
   function assignManagerForm() {
