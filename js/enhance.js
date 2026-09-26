@@ -273,7 +273,9 @@
     function standalone() {
       try {
         if (navigator.standalone === true) return true;
-        return ['standalone', 'fullscreen', 'minimal-ui', 'window-controls-overlay'].some(function (m) { return window.matchMedia('(display-mode: ' + m + ')').matches; });
+        // Our manifest asks for "standalone". Not "fullscreen": a normal browser window in
+        // full-screen mode matches that too.
+        return ['standalone', 'window-controls-overlay'].some(function (m) { return window.matchMedia('(display-mode: ' + m + ')').matches; });
       } catch (e) { return false; }
     }
     /* What "install" means here: prompt (Chrome/Edge gave us the native dialog),
