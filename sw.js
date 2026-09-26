@@ -1,5 +1,5 @@
 /* ==========================================================================
-   AVP HRIS — service worker (v3.1.0)
+   AVP HRIS — service worker (v3.1.1)
    --------------------------------------------------------------------------
    What makes the installed app open instantly and survive a flaky network,
    without ever showing yesterday's numbers:
@@ -8,14 +8,14 @@
        every figure on screen always comes from the server.
      · The page itself is network-first with a short timeout; after that the
        cached shell opens and the fresh copy still lands in the cache.
-     · Versioned files (?v=3.1.0) never change once published, so they are
+     · Versioned files (?v=3.1.1) never change once published, so they are
        served straight from the cache (fetched once, kept until the next release).
      · Icons and logos: stale-while-revalidate.
 
    Every release bumps BUILD, which evicts the previous cache on activation;
    the page then shows "A new version is ready — Reload".
    ========================================================================== */
-var BUILD = '3.1.0';
+var BUILD = '3.1.1';
 var CACHE = 'avp-hris-' + BUILD;
 var NAV_TIMEOUT_MS = 3500;
 
