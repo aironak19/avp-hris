@@ -1,124 +1,111 @@
 /* ==========================================================================
-   AVP HRIS — service worker
+   AVP HRIS — service worker (v3.1.0)
    --------------------------------------------------------------------------
-   Deliberately conservative. An HR system must never show yesterday's code or
-   yesterday's numbers, so:
+   What makes the installed app open instantly and survive a flaky network,
+   without ever showing yesterday's numbers:
 
-     · API traffic is never touched (cross-origin, and POST besides)
-     · app code and markup are network-first — the cache is only a fallback
-       when the network is unavailable
-     · fingerprint-stable assets (logos, fonts) are stale-while-revalidate
+     · API traffic is never touched (cross-origin POSTs to Apps Script) —
+       every figure on screen always comes from the server.
+     · The page itself is network-first with a short timeout; after that the
+       cached shell opens and the fresh copy still lands in the cache.
+     · Versioned files (?v=3.1.0) never change once published, so they are
+       served straight from the cache (fetched once, kept until the next release).
+     · Icons and logos: stale-while-revalidate.
 
-   ------------------------------------------------------------------ v2.0.1
-   Fixed: the offline fallback used to answer *any* failed same-origin GET
-   with index.html. A script request that fell through would therefore receive
-   an HTML document with a 200 status — the browser would fire `load`, try to
-   execute HTML as JavaScript, and the screen module would silently never
-   register. The view then fell back to a view that was not loaded either and
-   the page showed "Something went wrong". index.html is now only ever served
-   for navigation requests.
-
-   Bump CACHE on every release to evict the previous shell.
+   Every release bumps BUILD, which evicts the previous cache on activation;
+   the page then shows "A new version is ready — Reload".
    ========================================================================== */
-/* Keep BUILD in step with HRIS_BUILD in config.js and the ?v= in index.html:
-   those three together are what makes a release actually reach a browser. */
-var BUILD = '2.0.2';
-var CACHE = 'avp-hris-v' + BUILD;
+var BUILD = '3.1.0';
+var CACHE = 'avp-hris-' + BUILD;
+var NAV_TIMEOUT_MS = 3500;
 
-/* The versioned URLs are the ones index.html actually requests, so those are
-   the ones worth having available offline. */
-var PRECACHE = [
-  './', './index.html',
-  './config.js?v=' + BUILD,
-  './styles/tokens.css?v=' + BUILD,
-  './styles/app.css?v=' + BUILD,
-  './styles/motion.css?v=' + BUILD,
-  './js/runtime.js?v=' + BUILD,
-  './js/icons.js?v=' + BUILD,
-  './js/app.js?v=' + BUILD,
-  './js/enhance.js?v=' + BUILD,
+var SHELL = [
+  './', './index.html', './manifest.webmanifest',
+  './config.js?v=' + BUILD, './styles/app.css?v=' + BUILD,
+  './js/icons.js?v=' + BUILD, './js/runtime.js?v=' + BUILD, './js/app.js?v=' + BUILD, './js/enhance.js?v=' + BUILD,
+  './js/views/home.js?v=' + BUILD, './js/views/attendance.js?v=' + BUILD, './js/views/leave.js?v=' + BUILD,
   './assets/logo-full.webp', './assets/logo-mark.webp',
-  './manifest.webmanifest'
+  './assets/icons/icon-192.png', './assets/icons/apple-touch-icon.png'
 ];
 
 self.addEventListener('install', function (e) {
   e.waitUntil(
-    caches.open(CACHE)
-      .then(function (c) { return c.addAll(PRECACHE); })
-      .then(function () { return self.skipWaiting(); })
-      .catch(function () { return self.skipWaiting(); })   // a missing file must not block activation
+    caches.open(CACHE).then(function (c) {
+      // One missing file must not keep the release from installing.
+      return Promise.all(SHELL.map(function (u) { return c.add(new Request(u, { cache: 'reload' })).catch(function () {}); }));
+    }).then(function () { return self.skipWaiting(); })
   );
 });
 
 self.addEventListener('activate', function (e) {
   e.waitUntil(
-    caches.keys()
-      .then(function (keys) {
-        return Promise.all(keys.filter(function (k) { return k !== CACHE; })
-          .map(function (k) { return caches.delete(k); }));
-      })
-      .then(function () { return self.clients.claim(); })
+    caches.keys().then(function (keys) {
+      return Promise.all(keys.filter(function (k) { return /^avp-hris-/.test(k) && k !== CACHE; })
+        .map(function (k) { return caches.delete(k); }));
+    }).then(function () { return self.clients.claim(); })
   );
 });
 
-/* Let the page tell a waiting worker to take over immediately. */
-self.addEventListener('message', function (e) {
-  if (e.data === 'skip-waiting') self.skipWaiting();
-});
+self.addEventListener('message', function (e) { if (e.data === 'skip-waiting') self.skipWaiting(); });
 
-function putInCache(req, res) {
-  // Only full, basic responses are worth keeping; a 206 or an error page is not.
-  if (!res || res.status !== 200 || (res.type && res.type !== 'basic' && res.type !== 'cors')) return;
+function keep(req, res) {
+  if (!res || res.status !== 200 || (res.type !== 'basic' && res.type !== 'cors')) return res;
   var copy = res.clone();
-  caches.open(CACHE).then(function (c) { c.put(req, copy); }).catch(function () {});
+  caches.open(CACHE).then(function (c) { return c.put(req, copy); }).catch(function () {});
+  return res;
 }
 
 self.addEventListener('fetch', function (e) {
   var req = e.request;
-  if (req.method !== 'GET') return;                       // never the RPC POSTs
-
+  if (req.method !== 'GET') return;                        // the RPC POSTs
   var url = new URL(req.url);
-  var sameOrigin = url.origin === self.location.origin;
 
-  /* ---- cross-origin ---------------------------------------------------- */
-  if (!sameOrigin) {
-    // Google Fonts only; everything else (including the API) is left alone.
+  /* ---- other origins: Google Fonts only ------------------------------- */
+  if (url.origin !== self.location.origin) {
     if (/fonts\.(googleapis|gstatic)\.com$/.test(url.hostname)) {
-      e.respondWith(
-        caches.match(req).then(function (hit) {
-          var net = fetch(req).then(function (res) { putInCache(req, res); return res; });
-          return hit || net;
-        }).catch(function () { return fetch(req); })
-      );
-    }
-    return;
-  }
-
-  /* ---- brand assets: stale-while-revalidate ---------------------------- */
-  if (/\/assets\//.test(url.pathname)) {
-    e.respondWith(
-      caches.match(req).then(function (hit) {
-        var net = fetch(req).then(function (res) { putInCache(req, res); return res; })
-          .catch(function () { return hit; });
+      e.respondWith(caches.match(req).then(function (hit) {
+        var net = fetch(req).then(function (res) { return keep(req, res); }).catch(function () { return hit; });
         return hit || net;
-      })
-    );
+      }));
+    }
+    return;                                                  // Apps Script, Google sign-in, Drive: untouched
+  }
+
+  /* ---- opening the app: network-first, cached shell after a timeout ---- */
+  if (req.mode === 'navigate') {
+    e.respondWith(new Promise(function (resolve) {
+      var settled = false;
+      function done(r) { if (!settled && r) { settled = true; resolve(r); } }
+      var net = fetch(req).then(function (res) {
+        if (res && res.ok) caches.open(CACHE).then(function (c) { c.put('./index.html', res.clone()); }).catch(function () {});
+        return res;
+      });
+      var shell = function () { return caches.match('./index.html').then(function (h) { return h || caches.match('./'); }); };
+      setTimeout(function () { shell().then(done); }, NAV_TIMEOUT_MS);
+      net.then(done, function () { shell().then(function (h) { done(h || Response.error()); }); });
+    }));
     return;
   }
 
-  /* ---- everything else of ours: network-first -------------------------- */
-  e.respondWith(
-    fetch(req)
-      .then(function (res) { putInCache(req, res); return res; })
-      .catch(function () {
-        return caches.match(req).then(function (hit) {
-          if (hit) return hit;
-          /* The app shell stands in for a page the user asked to open, and
-             for nothing else. Answering a script or stylesheet request with
-             HTML is worse than failing: it fails silently. */
-          if (req.mode === 'navigate') return caches.match('./index.html');
-          return Response.error();
-        });
-      })
-  );
+  /* ---- versioned code: immutable once published ------------------------ */
+  if (url.searchParams.has('v')) {
+    e.respondWith(caches.match(req).then(function (hit) {
+      return hit || fetch(req).then(function (res) { return keep(req, res); });
+    }));
+    return;
+  }
+
+  /* ---- icons and logos: stale-while-revalidate ------------------------- */
+  if (/\/assets\//.test(url.pathname)) {
+    e.respondWith(caches.match(req).then(function (hit) {
+      var net = fetch(req).then(function (res) { return keep(req, res); }).catch(function () { return hit; });
+      return hit || net;
+    }));
+    return;
+  }
+
+  /* ---- anything else of ours: network-first ---------------------------- */
+  e.respondWith(fetch(req).then(function (res) { return keep(req, res); }).catch(function () {
+    return caches.match(req).then(function (hit) { return hit || Response.error(); });
+  }));
 });

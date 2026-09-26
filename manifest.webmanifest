@@ -1,15 +1,129 @@
 {
+  "id": "./",
   "name": "AVP HRIS",
   "short_name": "AVP HRIS",
-  "description": "AVP Structural Consultants — people, attendance, leave, payroll and letters.",
-  "start_url": "./",
+  "description": "Attendance, leave, approvals, payslips and people for AVP Structural Consultants.",
+  "lang": "en-IN",
+  "dir": "ltr",
+  "start_url": "./?source=pwa",
   "scope": "./",
   "display": "standalone",
-  "orientation": "portrait-primary",
-  "background_color": "#f3f2f2",
-  "theme_color": "#ec3013",
+  "orientation": "any",
+  "background_color": "#1b1716",
+  "theme_color": "#1b1716",
+  "categories": [
+    "business",
+    "productivity"
+  ],
+  "prefer_related_applications": false,
   "icons": [
-    { "src": "assets/logo-mark.webp", "sizes": "96x131", "type": "image/webp", "purpose": "any" },
-    { "src": "assets/logo-full.png", "sizes": "360x144", "type": "image/png", "purpose": "any" }
+    {
+      "src": "assets/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/icons/maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "assets/icons/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Check in",
+      "short_name": "Check in",
+      "description": "Mark today's attendance",
+      "url": "./?source=shortcut#/attendance",
+      "icons": [
+        {
+          "src": "assets/icons/shortcut-checkin.png",
+          "sizes": "96x96",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Apply for leave",
+      "short_name": "Leave",
+      "description": "Apply for leave or check your balance",
+      "url": "./?source=shortcut#/leave?tab=apply",
+      "icons": [
+        {
+          "src": "assets/icons/shortcut-leave.png",
+          "sizes": "96x96",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Approvals",
+      "short_name": "Approvals",
+      "description": "Requests waiting for you",
+      "url": "./?source=shortcut#/approvals",
+      "icons": [
+        {
+          "src": "assets/icons/shortcut-approvals.png",
+          "sizes": "96x96",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Payslips",
+      "short_name": "Payslips",
+      "description": "Your payslips",
+      "url": "./?source=shortcut#/payslips",
+      "icons": [
+        {
+          "src": "assets/icons/shortcut-payslip.png",
+          "sizes": "96x96",
+          "type": "image/png"
+        }
+      ]
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "assets/screens/phone-home.jpg",
+      "sizes": "824x1740",
+      "type": "image/jpeg",
+      "form_factor": "narrow",
+      "label": "Home: your day at a glance"
+    },
+    {
+      "src": "assets/screens/phone-attendance.jpg",
+      "sizes": "824x1740",
+      "type": "image/jpeg",
+      "form_factor": "narrow",
+      "label": "Geofenced check-in in one tap"
+    },
+    {
+      "src": "assets/screens/phone-approvals.jpg",
+      "sizes": "824x1740",
+      "type": "image/jpeg",
+      "form_factor": "narrow",
+      "label": "Approvals inbox"
+    },
+    {
+      "src": "assets/screens/desktop-home.jpg",
+      "sizes": "1440x900",
+      "type": "image/jpeg",
+      "form_factor": "wide",
+      "label": "AVP HRIS on the desktop"
+    }
   ]
 }
