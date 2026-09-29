@@ -259,6 +259,23 @@
     var isAndroid = /Android/i.test(ua);
     var mobile = isIOS || isAndroid || /Mobi/i.test(ua);
     var inAppBrowser = /(FBAN|FBAV|Instagram|Line\/|GSA\/|WhatsApp|LinkedInApp|Snapchat|; wv\))/i.test(ua);
+    /* v3.1.3 — Android: only Chrome installs web apps cleanly. Samsung Internet and
+       other phone-maker browsers wrap the app in a package built for an old Android
+       version, which Play Protect on Android 14+ blocks ("Unsafe app blocked").
+       Those browsers are sent to Chrome instead (index.html also withholds the
+       manifest from them, so their own install button never appears). */
+    var ANDROID_OTHER = [
+      [/SamsungBrowser/i, 'Samsung Internet'], [/MiuiBrowser/i, 'Mi Browser'], [/HuaweiBrowser/i, 'Huawei Browser'],
+      [/HeyTapBrowser/i, 'your phone\'s browser'], [/VivoBrowser/i, 'vivo Browser'], [/UCBrowser/i, 'UC Browser'],
+      [/YaBrowser/i, 'Yandex Browser'], [/OPR\/|Opera/i, 'Opera'], [/EdgA\//i, 'Edge'], [/Firefox\//i, 'Firefox'], [/DuckDuckGo/i, 'DuckDuckGo']
+    ];
+    var otherBrowser = '';
+    if (isAndroid) {
+      for (var bi = 0; bi < ANDROID_OTHER.length; bi++) { if (ANDROID_OTHER[bi][0].test(ua)) { otherBrowser = ANDROID_OTHER[bi][1]; break; } }
+      if (!otherBrowser && inAppBrowser) otherBrowser = 'this app\'s built-in browser';
+      if (!otherBrowser && !/Chrome\//.test(ua)) otherBrowser = 'this browser';
+    }
+    var needChrome = !!otherBrowser;
     var DISMISS_KEY = 'hris_pwa_dismissed', PENDING_KEY = 'hris_pwa_pending', DISMISS_DAYS = 14, PENDING_MS = 10 * 60 * 1000;
     var deferred = null, installedNow = false;
     var appUrl = host === 'static'
@@ -279,10 +296,12 @@
       } catch (e) { return false; }
     }
     /* What "install" means here: prompt (Chrome/Edge gave us the native dialog),
-       ios / android (show the steps), redirect (go to the app's address), none. */
+       ios / android (show the steps), chrome (Android, wrong browser: hand over to
+       Chrome), redirect (go to the app's address), none. */
     function mode() {
       if (standalone() || installedNow) return 'installed';
       if (host !== 'static') return appUrl ? 'redirect' : 'none';
+      if (needChrome) return 'chrome';
       if (deferred) return 'prompt';
       if (isIOS) return 'ios';
       if (isAndroid) return 'android';
@@ -291,15 +310,27 @@
     function offer() { var m = mode(); return m !== 'installed' && m !== 'none'; }
     function dismissed() { var t = +ls(DISMISS_KEY) || 0; return Date.now() - t < DISMISS_DAYS * 864e5; }
 
+    /* Opens this page in Chrome (Android). Falls back to Chrome's Play Store page. */
+    function chromeIntent() {
+      var target = appUrl.replace(/^https?:\/\//, '') + '?install=1';
+      return 'intent://' + target + '#Intent;scheme=https;package=com.android.chrome;S.browser_fallback_url=' +
+        encodeURIComponent('https://play.google.com/store/apps/details?id=com.android.chrome') + ';end';
+    }
+
     /* ---- surfaces ---------------------------------------------------------- */
     function cardInner() {
       var m = mode();
       var cta = m === 'redirect'
         ? '<a class="btn btn-primary btn-sm" href="' + esc(appUrl) + '?install=1" target="_top" data-pwa="open">' + ic('appinstall') + ' Get the app</a>'
-        : '<button class="btn btn-primary btn-sm" data-pwa="install">' + ic('appinstall') + ' Install</button>';
+        : m === 'chrome'
+          ? '<a class="btn btn-primary btn-sm" href="' + esc(chromeIntent()) + '" data-pwa="open">' + ic('externallink') + ' Open in Chrome</a>'
+          : '<button class="btn btn-primary btn-sm" data-pwa="install">' + ic('appinstall') + ' Install</button>';
+      var copy = m === 'chrome'
+        ? 'Install it from <b>Chrome</b> — ' + esc(otherBrowser) + ' gets blocked by Play Protect on newer Android phones. <a href="#" data-pwa="install">Why?</a>'
+        : mobile ? 'An icon on your home screen — opens in a tap, checks you in faster, feels like a real app.' : 'Open AVP HRIS in its own window, straight from your dock or taskbar.';
       return '<div class="pwa-card">' +
         '<div class="pwa-icon">' + (iconUrl ? '<img src="' + esc(iconUrl) + '" alt="" width="44" height="44">' : ic('smartphone', 22)) + '</div>' +
-        '<div class="pwa-copy"><b>Get the AVP HRIS app</b><span>' + (mobile ? 'An icon on your home screen — opens in a tap, checks you in faster, feels like a real app.' : 'Open AVP HRIS in its own window, straight from your dock or taskbar.') + '</span></div>' +
+        '<div class="pwa-copy"><b>Get the AVP HRIS app</b><span>' + copy + '</span></div>' +
         '<div class="pwa-cta">' + cta + '<button class="iconbtn" data-pwa="dismiss" aria-label="Not now" title="Not now">' + ic('x') + '</button></div>' +
         '</div>';
     }
@@ -310,6 +341,10 @@
     function loginChip() {
       if (!offer() || !mobile) return '';
       var m = mode();
+      if (m === 'chrome') {
+        return '<div class="pwa-login">' + (iconUrl ? '<img src="' + esc(iconUrl) + '" alt="" width="28" height="28">' : ic('smartphone')) +
+          '<span>Want the app? <a href="' + esc(chromeIntent()) + '" data-pwa="open">Open this page in Chrome</a> and install it from there — ' + esc(otherBrowser) + ' can\'t install it safely.</span></div>';
+      }
       var act = m === 'redirect' ? '<a href="' + esc(appUrl) + '?install=1" target="_top" data-pwa="open">Install the app</a>' : '<a href="#" data-pwa="install">Install the app</a>';
       return '<div class="pwa-login">' + (iconUrl ? '<img src="' + esc(iconUrl) + '" alt="" width="28" height="28">' : ic('smartphone')) +
         '<span>Using this on your phone? ' + act + ' first, then sign in there.</span></div>';
@@ -345,7 +380,17 @@
     function guide(kind) {
       if (!window.App || !App.modal) return;
       var steps, note = '';
-      if (kind === 'ios') {
+      var lead = '';
+      if (kind === 'chrome') {
+        lead = '<div class="pwa-warn">' + ic('shield', 18) + '<div><b>Please install from Chrome.</b> On newer Android phones, Play Protect blocks apps installed from ' + esc(otherBrowser) +
+          ' and shows <i>"Unsafe app blocked"</i>. Chrome installs the same app properly. If you saw that message, tap <b>OK</b> — nothing was installed.</div></div>' +
+          '<a class="btn btn-primary btn-xl pwa-chrome-btn" href="' + esc(chromeIntent()) + '" data-pwa="open">' + ic('externallink') + ' Open in Chrome</a>';
+        steps = step(1, 'externallink', 'Tap <b>Open in Chrome</b> above') +
+          step(2, 'appinstall', 'In Chrome, tap <b>Install</b> <small>(or <b>⋮ → Install app</b>)</small>') +
+          step(3, 'check', 'Open <b>AVP HRIS</b> from your home screen and sign in once.');
+        note = '<div class="hintbox mt2"><b>No Chrome on this phone?</b> Add a shortcut instead: open ' + esc(otherBrowser) + '\'s menu and tap <b>Add page to → Home screen</b>' +
+          (otherBrowser === 'Samsung Internet' ? '' : ' <small>(or Add to Home screen)</small>') + '. Please don\'t choose "Install anyway" on a Play Protect warning.</div>';
+      } else if (kind === 'ios') {
         steps = step(1, 'share', 'Tap <b>Share</b> in Safari\'s toolbar <small>(on newer iPhones tap <b>•••</b> first, then Share)</small>') +
           step(2, 'plussquare', 'Scroll down and tap <b>Add to Home Screen</b>') +
           step(3, 'check', 'Tap <b>Add</b>. Open <b>AVP HRIS</b> from your home screen and sign in once.');
@@ -367,7 +412,7 @@
         body: '<div class="pwa-guide">' +
           '<div class="pwa-guide-head">' + (iconUrl ? '<img src="' + esc(iconUrl) + '" alt="" width="64" height="64">' : '') +
           '<div><b>AVP HRIS</b><span>AVP Structural Consultants</span></div></div>' +
-          '<ol class="pwa-steps">' + steps + '</ol>' + note +
+          lead + '<ol class="pwa-steps">' + steps + '</ol>' + note +
           '<div class="pwa-addr"><span class="small muted">App address</span><code>' + esc(appUrl.replace(/^https:\/\//, '')) + '</code>' +
           '<button class="btn btn-ghost btn-sm" data-pwa="copy">' + ic('copy') + ' Copy link</button></div>' +
           '</div>',
@@ -470,7 +515,9 @@
 
     /* ---- browser events ------------------------------------------------------ */
     window.addEventListener('beforeinstallprompt', function (e) {
-      e.preventDefault(); deferred = e; paint();
+      e.preventDefault();
+      if (needChrome) return;            // this browser's install gets blocked by Play Protect
+      deferred = e; paint();
       if (window.HRIS_PWA_INSTALL && window.App && App.toast) App.toast('Tap Install to add AVP HRIS to this device.', 'ok', 4000);
     });
     window.addEventListener('appinstalled', function () {
@@ -484,7 +531,7 @@
     function afterLoginPaint() {
       if (!window.HRIS_PWA_INSTALL) return;
       window.HRIS_PWA_INSTALL = false;
-      setTimeout(function () { if (mode() === 'ios' || mode() === 'android') guide(mode()); }, 900);
+      setTimeout(function () { var m = mode(); if (m === 'ios' || m === 'android' || m === 'chrome') guide(m); }, 900);
     }
     if (window.HRIS_PWA_INSTALL) document.addEventListener('DOMContentLoaded', function () { setTimeout(function () { if (window.App && App.S && App.S.user) afterLoginPaint(); }, 2500); });
 
@@ -497,7 +544,8 @@
     return {
       standalone: standalone, mode: mode, offer: offer, install: install, guide: guide,
       homeCard: homeCard, loginChip: loginChip, paint: paint, afterLoginPaint: afterLoginPaint,
-      deferClaim: deferClaim, renderHandoff: renderHandoff, poll: poll, clearPending: clearPending, appUrl: function () { return appUrl; }
+      deferClaim: deferClaim, renderHandoff: renderHandoff, poll: poll, clearPending: clearPending, appUrl: function () { return appUrl; },
+      needChrome: function () { return needChrome; }, chromeIntent: chromeIntent
     };
   })();
   window.HRIS.pwa = Pwa;
