@@ -1071,6 +1071,11 @@ html.theme-reveal::view-transition-old(root) { animation: none; }
   .pwa-cta .btn { flex: 1; justify-content: center; }
 }
 
+.pwa-copy a { font-weight: 700; }
+.pwa-warn { display: grid; grid-template-columns: 22px 1fr; gap: 10px; padding: 12px 14px; border-radius: var(--r); background: var(--warn-bg); border: 1px solid var(--warn-line); color: var(--text); font-size: 13px; line-height: 1.5; margin-bottom: var(--s3); }
+.pwa-warn svg { width: 18px; height: 18px; color: var(--warn); margin-top: 2px; }
+.pwa-chrome-btn { width: 100%; justify-content: center; margin-bottom: var(--s4); }
+.pwa-chrome-btn svg { width: 18px; height: 18px; }
 .pwa-login { margin-top: var(--s4); display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: var(--r); background: var(--sunken); font-size: 12.5px; color: var(--n800); line-height: 1.45; }
 .pwa-login img { border-radius: 8px; flex: none; box-shadow: var(--shadow-sm); }
 .pwa-login a { font-weight: 700; }
