@@ -289,6 +289,21 @@
   if (!GS && (q.get('gc') || q.get('gerr') || q.get('glink') || q.get('glerr') || q.get('pwa') || q.get('install') || q.get('source'))) {
     try { history.replaceState(null, '', window.location.pathname + (window.SIGN_TOKEN ? '?sign=' + encodeURIComponent(window.SIGN_TOKEN) : '') + window.location.hash); } catch (e) {}
   }
+  /* v3.1.5 — Apps Script page: Google sends people back to /exec?code=…&state=….
+     Left in the address bar, that one-time code got saved into bookmarks and
+     Home Screen icons, so every later visit said "This sign-in link has expired".
+     Drop the sign-in leftovers from the top-level address once the page is up. */
+  if (GS && google.script.url && google.script.history) {
+    try {
+      google.script.url.getLocation(function (loc) {
+        var p = (loc && loc.parameter) || {};
+        var JUNK = ['code', 'state', 'scope', 'authuser', 'prompt', 'hd', 'iss', 'session_state', 'gc', 'gerr', 'glink', 'glerr', 'pwa', 'install', 'source'];
+        var keep = {}, dirty = false;
+        Object.keys(p).forEach(function (k) { if (JUNK.indexOf(k) === -1) keep[k] = p[k]; else dirty = true; });
+        if (dirty) google.script.history.replace(null, keep, (loc && loc.hash) || '');
+      });
+    } catch (e) {}
+  }
 
   /* ====================================================================== */
   /*  8. Boot                                                               */

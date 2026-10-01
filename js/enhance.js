@@ -321,21 +321,22 @@
     function cardInner() {
       var m = mode();
       var cta = m === 'redirect'
-        ? '<a class="btn btn-primary btn-sm" href="' + esc(appUrl) + '?install=1" target="_top" data-pwa="open">' + ic('appinstall') + ' Get the app</a>'
+        ? '<a class="btn btn-primary btn-sm" href="' + esc(appUrl) + '?install=1" target="_top" data-pwa="open">' + ic('appinstall') + (geoMovesToApp() ? ' Open the app' : ' Get the app') + '</a>'
         : m === 'chrome'
           ? '<a class="btn btn-primary btn-sm" href="' + esc(chromeIntent()) + '" data-pwa="open">' + ic('externallink') + ' Open in Chrome</a>'
           : '<button class="btn btn-primary btn-sm" data-pwa="install">' + ic('appinstall') + ' Install</button>';
       var copy = m === 'chrome'
         ? 'Install it from <b>Chrome</b> — ' + esc(otherBrowser) + ' gets blocked by Play Protect on newer Android phones. <a href="#" data-pwa="install">Why?</a>'
+        : geoMovesToApp() ? '<b>iPhone: check in from the app.</b> Location doesn\'t work on this Google page, so attendance can\'t be marked here.'
         : mobile ? 'An icon on your home screen — opens in a tap, checks you in faster, feels like a real app.' : 'Open AVP HRIS in its own window, straight from your dock or taskbar.';
       return '<div class="pwa-card">' +
         '<div class="pwa-icon">' + (iconUrl ? '<img src="' + esc(iconUrl) + '" alt="" width="44" height="44">' : ic('smartphone', 22)) + '</div>' +
         '<div class="pwa-copy"><b>Get the AVP HRIS app</b><span>' + copy + '</span></div>' +
-        '<div class="pwa-cta">' + cta + '<button class="iconbtn" data-pwa="dismiss" aria-label="Not now" title="Not now">' + ic('x') + '</button></div>' +
+        '<div class="pwa-cta">' + cta + (geoMovesToApp() ? '' : '<button class="iconbtn" data-pwa="dismiss" aria-label="Not now" title="Not now">' + ic('x') + '</button>') + '</div>' +
         '</div>';
     }
     function homeCard() {
-      var show = offer() && !dismissed() && (mobile || mode() === 'prompt');
+      var show = offer() && (!dismissed() || geoMovesToApp()) && (mobile || mode() === 'prompt');
       return '<div id="pwaSlot" class="pwa-slot">' + (show ? cardInner() : '') + '</div>';
     }
     function loginChip() {
@@ -345,13 +346,17 @@
         return '<div class="pwa-login">' + (iconUrl ? '<img src="' + esc(iconUrl) + '" alt="" width="28" height="28">' : ic('smartphone')) +
           '<span>Want the app? <a href="' + esc(chromeIntent()) + '" data-pwa="open">Open this page in Chrome</a> and install it from there — ' + esc(otherBrowser) + ' can\'t install it safely.</span></div>';
       }
+      if (geoMovesToApp()) {
+        return '<div class="pwa-login is-strong">' + (iconUrl ? '<img src="' + esc(iconUrl) + '" alt="" width="28" height="28">' : ic('smartphone')) +
+          '<span><b>On iPhone, use the AVP HRIS app.</b> This Google page can\'t use your location, so check-in won\'t work here. <a href="' + esc(appUrl) + '?install=1" target="_top" data-pwa="open">Open the app</a></span></div>';
+      }
       var act = m === 'redirect' ? '<a href="' + esc(appUrl) + '?install=1" target="_top" data-pwa="open">Install the app</a>' : '<a href="#" data-pwa="install">Install the app</a>';
       return '<div class="pwa-login">' + (iconUrl ? '<img src="' + esc(iconUrl) + '" alt="" width="28" height="28">' : ic('smartphone')) +
         '<span>Using this on your phone? ' + act + ' first, then sign in there.</span></div>';
     }
     function paint() {
       var slot = document.getElementById('pwaSlot');
-      if (slot) slot.innerHTML = (offer() && !dismissed() && (mobile || mode() === 'prompt')) ? cardInner() : '';
+      if (slot) slot.innerHTML = (offer() && (!dismissed() || geoMovesToApp()) && (mobile || mode() === 'prompt')) ? cardInner() : '';
     }
     function dismiss() {
       ls(DISMISS_KEY, String(Date.now()));
@@ -419,6 +424,94 @@
         footer: '<button class="btn btn-primary" data-close="btn">Got it</button>'
       });
     }
+
+    /* ---- location help (v3.1.5) --------------------------------------------- */
+    /* iPhone + the Google Script page: Safari never shows its location question
+       inside Google's sandboxed frame — the request just comes back "denied",
+       even with Location Services on. The same app on its own address (appUrl)
+       is an ordinary page, so Safari asks there. Everywhere else the fix is a
+       browser or phone setting, so the sheet shows those steps for this device. */
+    function geoMovesToApp() { return host !== 'static' && isIOS && !!appUrl; }
+    function addrBox() {
+      if (!appUrl) return '';
+      return '<div class="pwa-addr"><span class="small muted">App address</span><code>' + esc(appUrl.replace(/^https:\/\//, '')) + '</code>' +
+        '<button class="btn btn-ghost btn-sm" data-pwa="copy">' + ic('copy') + ' Copy link</button></div>';
+    }
+    var geoAsked = 0;
+    function geoHelp(opts) {
+      opts = opts || {};
+      if (!window.App || !App.modal) return;
+      geoAsked++;
+      var settled = false;
+      var title, body, footer, steps, note = '';
+      if (geoMovesToApp()) {
+        title = 'Check in from the AVP HRIS app';
+        body = '<div class="pwa-warn">' + ic('pin', 18) + '<div><b>iPhone blocks location on this Google page</b>, even when Location is on. ' +
+          'The AVP HRIS app link is the same app — there Safari asks for your location and check-in works.</div></div>' +
+          '<a class="btn btn-primary btn-xl pwa-chrome-btn" href="' + esc(appUrl) + '?install=1" target="_top" data-pwa="open">' + ic('externallink') + ' Open the AVP HRIS app</a>' +
+          '<ol class="pwa-steps">' +
+          step(1, 'externallink', 'Tap <b>Open the AVP HRIS app</b> and sign in once <small>(employee code or Google)</small>') +
+          step(2, 'pin', 'When Safari asks to use your location, tap <b>Allow</b> — then check in') +
+          step(3, 'plussquare', 'Tap <b>Share → Add to Home Screen</b>, and delete the old AVP HRIS icon') +
+          '</ol>' + addrBox();
+        footer = '<button class="btn btn-secondary" data-close="btn">Close</button>';
+      } else {
+        title = 'Allow location to mark attendance';
+        if (isIOS) {
+          steps = step(1, 'settings', 'iPhone <b>Settings → Privacy &amp; Security → Location Services</b>: turn it on, then <b>Safari Websites → While Using the App</b>') +
+            step(2, 'pin', 'In Safari, tap the <b>page menu</b> left of the address <small>(aA or ☰)</small> → <b>Website Settings → Location → Allow</b>') +
+            step(3, 'refresh', 'Come back here and tap <b>Try again</b>');
+          note = standalone()
+            ? '<div class="hintbox mt2"><b>Using the AVP HRIS icon on your Home Screen?</b> Close it fully (swipe it away) and open it again. If it still never asks: delete the icon, open the link in Safari, allow location there, then add it to the Home Screen again.</div>'
+            : '';
+        } else if (isAndroid) {
+          steps = step(1, 'pin', 'Turn on <b>Location</b> <small>(swipe down from the top of the screen)</small>') +
+            step(2, 'settings', 'In Chrome, tap the icon left of the web address → <b>Permissions</b> <small>(or Site settings)</small> → <b>Location → Allow</b>') +
+            step(3, 'refresh', 'Come back here and tap <b>Try again</b>');
+          note = '<div class="hintbox mt2"><b>Still blocked?</b> Phone <b>Settings → Location → App location permissions → Chrome → Allow only while using the app</b>.' +
+            (standalone() ? ' For the installed app: Chrome <b>⋮ → Settings → Site settings → Location</b> → allow this site.' : '') + '</div>';
+        } else {
+          steps = step(1, 'settings', 'Click the icon at the left of the address bar → <b>Location → Allow</b>') +
+            step(2, 'refresh', 'Click <b>Try again</b> below') +
+            step(3, 'smartphone', 'On a Mac, also check <b>System Settings → Privacy &amp; Security → Location Services</b> for your browser');
+        }
+        body = '<div class="pwa-warn">' + ic('pin', 18) + '<div><b>' + (geoAsked > 1 ? 'Location is still blocked.' : 'Location is blocked for AVP HRIS.') + '</b> ' +
+          'Attendance needs your location once, at the moment you check in or out — it is never tracked in the background.</div></div>' +
+          '<ol class="pwa-steps">' + steps + '</ol>' + note +
+          (host !== 'static' && appUrl ? '<div class="hintbox mt2">Or use the <a href="' + esc(appUrl) + '?install=1" target="_top" data-pwa="open">AVP HRIS app link</a> instead of this Google page.</div>' : '');
+        footer = '<button class="btn btn-secondary" data-close="btn">Close</button>' +
+          (opts.retry ? '<button class="btn btn-primary" data-geo="retry">' + ic('refresh') + ' Try again</button>' : '');
+      }
+      App.modal({
+        title: title,
+        body: '<div class="pwa-guide geo-help">' + body + '</div>',
+        footer: footer,
+        onMount: function (root) {
+          var box = root.querySelector('.backdrop');
+          var r = root.querySelector('[data-geo="retry"]');
+          if (r) r.addEventListener('click', function () {
+            settled = true;
+            App.close(true);
+            setTimeout(opts.retry, 40);
+          });
+          // Closed any other way (X, backdrop, Esc, the app link) → the punch is abandoned.
+          if (window.MutationObserver && box) {
+            var mo = new MutationObserver(function () {
+              if (box.isConnected) return;
+              mo.disconnect();
+              if (!settled) { settled = true; if (opts.dismiss) opts.dismiss(); }
+            });
+            mo.observe(root, { childList: true });
+          }
+        }
+      });
+    }
+    document.addEventListener('click', function (ev) {
+      var a = ev.target && ev.target.closest && ev.target.closest('[data-geohelp]');
+      if (!a) return;
+      ev.preventDefault();
+      geoHelp({ retry: function () { window.App && App.render && App.render(); } });
+    });
 
     /* ---- Google sign-in from the installed app ------------------------------ */
     function nonce() {
@@ -545,7 +638,8 @@
       standalone: standalone, mode: mode, offer: offer, install: install, guide: guide,
       homeCard: homeCard, loginChip: loginChip, paint: paint, afterLoginPaint: afterLoginPaint,
       deferClaim: deferClaim, renderHandoff: renderHandoff, poll: poll, clearPending: clearPending, appUrl: function () { return appUrl; },
-      needChrome: function () { return needChrome; }, chromeIntent: chromeIntent
+      needChrome: function () { return needChrome; }, chromeIntent: chromeIntent,
+      geoHelp: geoHelp, geoMovesToApp: geoMovesToApp
     };
   })();
   window.HRIS.pwa = Pwa;

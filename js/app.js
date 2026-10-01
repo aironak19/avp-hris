@@ -96,12 +96,15 @@ var App = (function () {
   /* --------------------------------------------------------------- toasts */
   function toast(msg, kind, ms) {
     var host = document.getElementById('toasts');
+    // v3.1.5: the same message twice (a button tapped again) refreshes the toast instead of stacking a copy.
+    var same = Array.prototype.filter.call(host.children, function (t) { return !t.classList.contains('is-closing') && t.textContent === String(msg); })[0];
+    if (same) { same.classList.remove('bump'); void same.offsetWidth; same.classList.add('bump'); clearTimeout(same._t); same._t = setTimeout(function () { same.classList.add('is-closing'); setTimeout(function () { same.remove(); }, 200); }, ms || (kind === 'err' ? 6000 : 3000)); return; }
     var el = document.createElement('div');
     el.className = 'toast' + (kind ? ' ' + kind : '');
     el.innerHTML = esc(msg);
     host.appendChild(el);
     if (kind === 'err' && navigator.vibrate) { try { navigator.vibrate([10, 30, 10]); } catch (e) {} }
-    setTimeout(function () { el.classList.add('is-closing'); setTimeout(function () { el.remove(); }, 200); }, ms || (kind === 'err' ? 6000 : 3000));
+    el._t = setTimeout(function () { el.classList.add('is-closing'); setTimeout(function () { el.remove(); }, 200); }, ms || (kind === 'err' ? 6000 : 3000));
   }
 
   /* --------------------------------------------------------------- modals */
@@ -168,21 +171,32 @@ var App = (function () {
   }
 
   /* ------------------------------------------------------------ geolocation */
+  /* v3.1.5: errors carry a code (GEO_DENIED / GEO_UNAVAILABLE / GEO_TIMEOUT /
+     GEO_UNSUPPORTED) so callers can open the "how to allow location" help
+     instead of only flashing a toast. */
+  function geoError(code, msg) { var e = new Error(msg); e.code = code; return e; }
   function getPosition(opts) {
     return new Promise(function (resolve, reject) {
-      if (!navigator.geolocation) return reject(new Error('This browser cannot share your location. Please use Chrome or Safari on your phone.'));
+      if (!navigator.geolocation) return reject(geoError('GEO_UNSUPPORTED', 'This browser cannot share your location. Please use Chrome or Safari on your phone.'));
       navigator.geolocation.getCurrentPosition(
         function (pos) { resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy }); },
         function (err) {
-          var msg = 'We could not read your location.';
-          if (err.code === 1) msg = 'Location permission is blocked. Allow location for this site in your browser settings and try again.';
-          else if (err.code === 2) msg = 'Your location is unavailable right now. Move to an open area and try again.';
-          else if (err.code === 3) msg = 'Getting your location timed out. Please try again.';
-          reject(new Error(msg));
+          if (err.code === 1) return reject(geoError('GEO_DENIED', 'Location is blocked for AVP HRIS, so attendance can\'t be marked.'));
+          if (err.code === 2) return reject(geoError('GEO_UNAVAILABLE', 'Your location is unavailable right now. Check that Location is on, move to an open area and try again.'));
+          if (err.code === 3) return reject(geoError('GEO_TIMEOUT', 'Getting your location timed out. Please try again.'));
+          reject(geoError('GEO_ERROR', 'We could not read your location.'));
         },
         Object.assign({ enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }, opts || {})
       );
     });
+  }
+  /** 'granted' | 'denied' | 'prompt' | 'unknown' — never rejects. */
+  function geoPermission() {
+    try {
+      if (!navigator.permissions || !navigator.permissions.query) return Promise.resolve('unknown');
+      return navigator.permissions.query({ name: 'geolocation' })
+        .then(function (s) { return (s && s.state) || 'unknown'; }, function () { return 'unknown'; });
+    } catch (e) { return Promise.resolve('unknown'); }
   }
 
   /* --------------------------------------------------------------- routing */
@@ -702,11 +716,14 @@ var App = (function () {
     var hasGoogle = typeof GOOGLE_AUTH_URL !== 'undefined' && !!GOOGLE_AUTH_URL;
     var hint = (typeof LOGIN_HINT !== 'undefined' && LOGIN_HINT) || '';
     var lastId = store.get('hris_last_id') || '';
+    var chip = HRIS.pwa ? HRIS.pwa.loginChip() : '';
+    var chipTop = !!(HRIS.pwa && HRIS.pwa.geoMovesToApp && HRIS.pwa.geoMovesToApp());   // v3.1.5: iPhone on the Google page — say it first
     document.getElementById('app').innerHTML =
       '<div class="login">' + loginArt() +
       '<div class="form"><div class="box rise-in">' +
       '<div class="kicker">Sign in</div><h2 style="margin-bottom:6px">Welcome back.</h2>' +
       '<p class="small muted" style="margin-bottom:18px">' + (hasGoogle ? 'Use your Google account (the AVP or personal address HR has on file) — no password needed.' : 'Sign in with your employee code and password.') + '</p>' +
+      (chipTop ? chip : '') +
       (message ? '<div class="geo ' + (kind === 'ok' ? 'ok' : 'bad') + '" style="margin-bottom:16px">' + ic(kind === 'ok' ? 'check' : 'alert') + esc(message) + '</div>' : '') +
       (hasGoogle ? googleButton('Continue with Google') + '<div class="divider"><span>or use your employee code</span></div>' : '') +
       '<form id="loginForm" autocomplete="on">' +
@@ -715,7 +732,7 @@ var App = (function () {
       '<button class="btn btn-primary btn-xl" type="submit" id="loginBtn">Sign in</button></form>' +
       '<div class="spread mt2" style="font-size:13px"><a href="#" id="forgotLink">Forgot password?</a><span class="small muted">Stays signed in on this device</span></div>' +
       (hint ? '<div class="hintbox mt3"><b>Password help.</b> ' + esc(hint) + '</div>' : '') +
-      (HRIS.pwa ? HRIS.pwa.loginChip() : '') +
+      (chipTop ? '' : chip) +
       '</div></div></div>';
     HRIS.splashOut && HRIS.splashOut();
     HRIS.pwa && HRIS.pwa.afterLoginPaint && HRIS.pwa.afterLoginPaint();
@@ -1037,7 +1054,7 @@ var App = (function () {
   return {
     S: S, api: api, boot: boot, render: render, go: go, esc: esc,
     toast: toast, modal: modal, close: close, confirm: confirmDialog, prompt: prompt,
-    getPosition: getPosition, registerView: registerView, registerAdminTab: registerAdminTab,
+    getPosition: getPosition, geoPermission: geoPermission, registerView: registerView, registerAdminTab: registerAdminTab,
     money: money, openBlob: openBlob, readUpload: readUpload, fileField: fileField, relTime: relTime,
     pretty: pretty, shortD: shortD, dow: dow, todayStr: todayStr, monthKey: monthKey,
     monthLabel: monthLabel, addMonthKey: addMonthKey, hm: hm, initials: initials, days: days,
