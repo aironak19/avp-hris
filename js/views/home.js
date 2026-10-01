@@ -16,11 +16,22 @@
     title: 'Home',
     render: function () {
       var cached = A.S.homePayload; A.S.homePayload = null;
-      var homeP = cached ? Promise.resolve(cached) : A.api('app.home');
+      // A session refresh already on its way (after a punch, say) carries Home: wait for it
+      // rather than asking the server the same question in a second request.
+      var homeP = cached ? Promise.resolve(cached) : A.S.sessionP
+        ? A.S.sessionP.then(function (s) { return (s && s.home) || A.api('app.home'); }, function () { return A.api('app.home'); })
+        : A.api('app.home');
       var monthP = A.api('att.month', { month: A.monthKey() }).catch(function () { return null; });
+      // The month only feeds the small worked-hours chart: when it is not to hand
+      // yet, paint without it and fill it in when it lands.
+      var monthNow = Promise.race([monthP, new Promise(function (res) { setTimeout(function () { res(undefined); }, 80); })]);
       var noticesP = A.loadModule ? A.loadModule('ViewsNotices').catch(function () {}) : Promise.resolve();
-      return Promise.all([homeP, monthP, noticesP]).then(function (r) {
+      return Promise.all([homeP, monthNow, noticesP]).then(function (r) {
         var h = r[0], m = r[1];
+        if (m === undefined) {
+          m = null;
+          monthP.then(function (late) { if (late && A.S.route === 'home') A.render({ quiet: true }); });
+        }
         A.S.home = h;
         A.S.pending = h.pendingCount;
         A.S.pendingAcks = h.pendingAcks || 0;
