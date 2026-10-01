@@ -98,11 +98,38 @@ A cached read can only ever make the *display* briefly stale. It can never let
 a rule be bypassed: every action is itself a server call, authorised and
 validated against fresh data on the server.
 
-### What is still slow, and honestly cannot be fixed here
+### v3.2: never wait on a read twice
 
-The first call of any screen that has no cached copy costs ~2.6 s. That is the
-floor for this architecture. Getting below it means not using Apps Script as
-the HTTP API — which would mean a real backend, and a bill.
+The 90-second, per-tab cache above still meant that every launch of the app,
+and almost every screen, sat on a skeleton for one or two round trips. v3.2
+removes the network from everything except the very first load:
+
+- **Saved reads, kept across launches.** Every read is answered from its last
+  copy at once (localStorage, per signed-in user, up to two weeks old) and
+  re-asked behind the paint; if the answer changed, the screen re-renders
+  quietly. Answers about "today" (`att.today`, `app.home`) are never shown
+  from an earlier day. File downloads and the sign-in/signing flows are never
+  cached.
+- **Writes refresh what they touched.** After a write, that module's copies
+  (and Home's) are dropped so the user never sees the state from before their
+  own change; everything else stays instant and is re-checked on next use.
+- **The session snapshot paints at any age.** One from an earlier day has its
+  "today" parts reset to the start-of-day state until the fresh session lands.
+- **One request at boot, one prefetch after it.** `app.session`, `att.month`
+  and `att.today` go in a single batch; the most-used screens (leave,
+  payslips, notices, profile, approvals) are then fetched in one background
+  batch, so the first tap on each paints immediately.
+- **The service worker opens the shell from cache** instead of waiting up to
+  3.5 s for the network; the fresh shell is stored for the next launch.
+
+Measured against a mock with Apps Script's latency (2.2 s per call plus server
+time): reopening the app went from 2.4 s to ~40 ms, the first open of the day
+from 4.9 s to ~40 ms, and each screen from ~2.4 s to ~30 ms. The first load
+after signing in is one round trip (~2.8 s), down from two.
+
+What still waits on the server: signing in, and writes (a punch, an
+approval). Those are one round trip each. The server half of v3.2 (a longer,
+write-through table cache in `Repo.gs`) shortens the server time inside it.
 
 ---
 
