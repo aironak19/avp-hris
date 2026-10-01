@@ -96,39 +96,113 @@
   function isRead(action) { return !isWrite(action); }
 
   /* ====================================================================== */
-  /*  3. Read cache (memory + optional session persistence)                 */
+  /*  3. Read cache — stale-while-revalidate, kept across launches          */
   /* ====================================================================== */
-  var CACHE_TTL_MS = 90 * 1000, REVALIDATE_GAP_MS = 3000, PERSIST_KEY = 'hris_readcache_v3';
-  var readCache = Object.create(null);
+  /* v3.2 — an /exec round trip costs 2–4 s however little the route does, so
+     the app never waits on a read it has seen before. The last copy is shown
+     at once (any age, same signed-in user) and the server is asked again
+     behind the paint; if the answer changed, the screen re-renders quietly.
 
+     The copy lives in localStorage so it survives closing the app. Before
+     v3.2 it was per-tab and expired after 90 s, which is why every launch and
+     almost every screen used to sit on a skeleton.
+
+     A copy can only make the *display* briefly stale. Every action is still a
+     server call, authorised and validated against fresh data on the server. */
+  var PERSIST_KEY = 'hris_readcache_v4';
+  var REVALIDATE_GAP_MS = 4000;                     // the same read is re-asked at most this often
+  var MAX_AGE_MS = 14 * 24 * 3600 * 1000;           // a copy older than this is not worth showing
+  var PERSIST_MAX_ENTRIES = 80, PERSIST_MAX_CHARS = 1500000, ENTRY_MAX_CHARS = 200000;
+  /* Never cached: file downloads (large, and fetched on purpose), the
+     sign-in and document-signing flows, and app.session (the shell keeps its
+     own snapshot of it). */
+  var NO_CACHE = /^(auth|sign)\.|^app\.session$|^onboarding\.downloadDocument$|^(payslips|letters)\.fetch$|^notices\.file$|^expenses\.receipt$|^recruit\.resume$|^letters\.(signPdf|signContext)$/;
+  /* Answers about "today": a copy from an earlier day is never shown. */
+  var DAY_BOUND = /^(att\.today|app\.home)$/;
+  /* A write to one of these modules only changes that module's screens (and
+     Home); anything else — admin, people, roles, settings — refetches everything. */
+  var WRITE_SCOPE = {
+    att: ['att', 'reg'], reg: ['att', 'reg'], leave: ['leave', 'compoff'], compoff: ['leave', 'compoff'],
+    notify: ['notify'], notices: ['notices'], payslips: ['payslips'], letters: ['letters'], expenses: ['expenses'],
+    tickets: ['tickets'], goals: ['goals', 'appraisals'], appraisals: ['goals', 'appraisals'], assets: ['assets'],
+    exit: ['exit'], recruit: ['recruit', 'interviews'], interviews: ['recruit', 'interviews']
+  };
+
+  var readCache = Object.create(null);
+  var writeGen = 0;          // bumped by every write; a read that started before one is not stored
+
+  function dayStamp() { var n = new Date(); return n.getFullYear() + '-' + (n.getMonth() + 1) + '-' + n.getDate(); }
+  function moduleOf(key) { return String(key).split('|')[0].split('.')[0]; }
   function cacheKey(action, payload) {
     var p = {};
     for (var k in payload) if (k !== 'token') p[k] = payload[k];
     try { return action + '|' + JSON.stringify(p); } catch (e) { return null; }
   }
-  function clearReadCache() { readCache = Object.create(null); try { sessionStorage.removeItem(PERSIST_KEY); } catch (e) {} }
+  function usable(key) {
+    var hit = readCache[key];
+    if (!hit || !hit.res) return null;
+    if (Date.now() - (hit.at || 0) > MAX_AGE_MS || (DAY_BOUND.test(key.split('|')[0]) && hit.day !== dayStamp())) { delete readCache[key]; return null; }
+    return hit;
+  }
+  function storeRead(key, res) {
+    var now = Date.now();
+    readCache[key] = { res: res, at: now, checkedAt: now, day: dayStamp(), serialised: safeSerialise(res) };
+    persistSoon();
+  }
+  function clearReadCache() {
+    readCache = Object.create(null); writeGen++;
+    try { localStorage.removeItem(PERSIST_KEY); } catch (e) {}
+  }
+  /* Everything is still shown, but re-asked the next time it is needed. */
+  function markAllDirty() { for (var k in readCache) readCache[k].dirty = true; }
+  /* After a write, the copies it could have changed are dropped, so the
+     screen the user is on never shows the state from before their own
+     change. Everything else stays on screen but is re-asked on next use. */
+  function afterWrite(action) {
+    writeGen++;
+    var scope = WRITE_SCOPE[String(action).split('.')[0]];
+    if (!scope) { clearReadCache(); return; }
+    for (var k in readCache) {
+      var m = moduleOf(k);
+      if (m === 'app' || scope.indexOf(m) !== -1) delete readCache[k]; else readCache[k].dirty = true;
+    }
+    persistSoon();
+  }
+  /* Lets the shell file an answer it already has (Home arrives inside app.session). */
+  function seedRead(action, payload, data) {
+    var key = cacheKey(action, payload || {});
+    if (key) storeRead(key, { ok: true, data: data });
+  }
 
-  /* Persist the last few reads for the current token so a reload paints
-     instantly and revalidates behind. Kept small and per-session. */
   var persistTimer = null;
   function persistSoon() {
     clearTimeout(persistTimer);
-    persistTimer = setTimeout(function () {
-      try {
-        var keys = Object.keys(readCache).slice(-40), out = {};
-        keys.forEach(function (k) { if (readCache[k] && readCache[k].res && !/viewAs/.test(k)) out[k] = { res: readCache[k].res, at: readCache[k].at }; });
-        sessionStorage.setItem(PERSIST_KEY, JSON.stringify({ t: tokenTail(), c: out }));
-      } catch (e) {}
-    }, 400);
+    persistTimer = setTimeout(persistNow, 600);
+  }
+  function persistNow() {
+    try {
+      var keys = Object.keys(readCache).filter(function (k) { return !/viewAs/.test(k) && readCache[k].serialised; })
+        .sort(function (a, b) { return readCache[b].at - readCache[a].at; });
+      var out = {}, total = 0, n = 0;
+      for (var i = 0; i < keys.length && n < PERSIST_MAX_ENTRIES; i++) {
+        var h = readCache[keys[i]], len = h.serialised.length;
+        if (len > ENTRY_MAX_CHARS || total + len > PERSIST_MAX_CHARS) continue;
+        out[keys[i]] = { res: h.res, at: h.at, day: h.day };
+        total += len; n++;
+      }
+      localStorage.setItem(PERSIST_KEY, JSON.stringify({ t: tokenTail(), c: out }));
+    } catch (e) { try { localStorage.removeItem(PERSIST_KEY); } catch (e2) {} }
   }
   function tokenTail() { try { return String(localStorage.getItem('hris_token') || '').slice(-8); } catch (e) { return ''; } }
   (function restore() {
+    try { sessionStorage.removeItem('hris_readcache_v3'); } catch (e) {}
     try {
-      var raw = sessionStorage.getItem(PERSIST_KEY); if (!raw) return;
-      var data = JSON.parse(raw); if (!data || data.t !== tokenTail()) return;
+      var raw = localStorage.getItem(PERSIST_KEY); if (!raw) return;
+      var data = JSON.parse(raw);
+      if (!data || !data.t || data.t !== tokenTail()) { localStorage.removeItem(PERSIST_KEY); return; }
       Object.keys(data.c || {}).forEach(function (k) {
         var v = data.c[k]; if (!v || !v.res) return;
-        readCache[k] = { res: v.res, at: v.at || 0, checkedAt: 0, serialised: safeSerialise(v.res), stale: true };
+        readCache[k] = { res: v.res, at: v.at || 0, day: v.day, checkedAt: 0, serialised: safeSerialise(v.res), dirty: true };
       });
     } catch (e) {}
   })();
@@ -149,7 +223,6 @@
     if (typeof requestAnimationFrame === 'function' && !document.hidden) requestAnimationFrame(run); else Promise.resolve().then(run);
   }
   function currentRoute() { return (location.hash || '').split('?')[0].replace('#/', '') || 'home'; }
-
   /* ====================================================================== */
   /*  4. Batching (static host only)                                        */
   /* ====================================================================== */
@@ -183,42 +256,53 @@
   /* ====================================================================== */
   /*  5. The transport the app sees                                         */
   /* ====================================================================== */
-  function transport(action, payload) {
+  /* opts.fresh — skip the copy and wait for the server (still stored). */
+  function transport(action, payload, opts) {
     if (!GS && !ENDPOINT) return Promise.reject(new Error('The app is not configured yet: set the Apps Script /exec URL in config.js.'));
-    payload = payload || {};
-    if (isWrite(action)) { clearReadCache(); return enqueue(action, payload); }
+    payload = payload || {}; opts = opts || {};
+    if (isWrite(action)) { afterWrite(action); return enqueue(action, payload); }
+    if (NO_CACHE.test(action)) return enqueue(action, payload);
 
     var key = cacheKey(action, payload);
     if (!key) return enqueue(action, payload);
-    var hit = readCache[key], now = Date.now();
-
-    if (hit && hit.res && ((now - hit.at) < CACHE_TTL_MS || hit.stale)) {
-      var mustRevalidate = hit.stale || (!hit.revalidating && (now - (hit.checkedAt || hit.at)) > REVALIDATE_GAP_MS);
-      if (mustRevalidate && !hit.revalidating) {
-        hit.revalidating = true; hit.stale = false;
-        var route = currentRoute(), before = hit.serialised;
-        enqueue(action, payload).then(function (fresh) {
-          hit.revalidating = false; hit.checkedAt = Date.now();
-          if (!fresh || fresh.ok !== true) return;
-          var s = safeSerialise(fresh);
-          hit.res = fresh; hit.at = Date.now(); hit.serialised = s; persistSoon();
-          if (s !== before) scheduleRerender(route);
-        }, function () { hit.revalidating = false; hit.checkedAt = Date.now(); });
-      }
+    var hit = opts.fresh ? null : usable(key);
+    if (hit) {
+      if (hit.dirty || (Date.now() - (hit.checkedAt || 0)) > REVALIDATE_GAP_MS) revalidate(key, action, payload, hit);
       return Promise.resolve(hit.res);
     }
+    return fetchRead(key, action, payload);
+  }
+  function fetchRead(key, action, payload) {
     if (inflight[key]) return inflight[key];
+    var gen = writeGen;
     var p = enqueue(action, payload).then(function (res) {
-      delete inflight[key];
-      if (res && res.ok === true) { readCache[key] = { res: res, at: Date.now(), checkedAt: Date.now(), serialised: safeSerialise(res) }; persistSoon(); }
+      if (inflight[key] === p) delete inflight[key];
+      if (res && res.ok === true && gen === writeGen) storeRead(key, res);
       return res;
-    }, function (e) { delete inflight[key]; throw e; });
+    }, function (e) { if (inflight[key] === p) delete inflight[key]; throw e; });
     inflight[key] = p;
     return p;
   }
+  function revalidate(key, action, payload, hit) {
+    if (inflight[key]) return;
+    var route = currentRoute(), before = hit.serialised;
+    hit.dirty = false; hit.checkedAt = Date.now();
+    fetchRead(key, action, payload).then(function (fresh) {
+      var now = readCache[key];
+      if (fresh && fresh.ok === true && now && now.serialised !== before) scheduleRerender(route);
+    }, function () {});
+  }
+  /* True when a usable copy exists that is younger than maxAgeMs. */
+  function hasFresh(action, payload, maxAgeMs) {
+    var key = cacheKey(action, payload || {}), hit = key && usable(key);
+    return !!(hit && Date.now() - hit.at < maxAgeMs);
+  }
   function safeSerialise(v) { try { return JSON.stringify(v); } catch (e) { return null; } }
 
-  window.HRIS = { transport: transport, endpoint: ENDPOINT, clearReadCache: clearReadCache, isWrite: isWrite, host: GS ? 'apps-script' : 'static' };
+  window.HRIS = {
+    transport: transport, endpoint: ENDPOINT, clearReadCache: clearReadCache, markAllDirty: markAllDirty,
+    seedRead: seedRead, hasFresh: hasFresh, isWrite: isWrite, host: GS ? 'apps-script' : 'static'
+  };
 
   /* ====================================================================== */
   /*  6. View modules                                                       */

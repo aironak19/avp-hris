@@ -28,7 +28,9 @@
   /* ============================================================ 2. splash === */
   (function splash() {
     var el = document.getElementById('splash'); if (!el) return;
-    var shown = Date.now(), MIN = 650;
+    // v3.2: the app now paints from its saved copy almost at once, so the splash
+    // only stays long enough not to flash (it was 650 ms).
+    var shown = Date.now(), MIN = 250;
     window.HRIS.splashOut = function () {
       if (el.classList.contains('out')) return;
       var wait = Math.max(0, MIN - (Date.now() - shown));

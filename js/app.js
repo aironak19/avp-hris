@@ -27,17 +27,21 @@ var App = (function () {
     _m: {}
   };
   var SNAP_KEY = 'hris_snapshot_v3';
-  var SNAP_MAX_AGE_MS = 12 * 3600 * 1000;
+  /* v3.2: a snapshot paints the app instantly however old it is (up to two
+     weeks); a fresh session is always fetched behind it. Before, anything
+     older than 12 hours was ignored, so the first open of every morning
+     waited on the server. */
+  var SNAP_MAX_AGE_MS = 14 * 24 * 3600 * 1000;
   S.collapsed = store.get('hris_sidebar') === 'collapsed';
 
   /* ----------------------------------------------------------------- rpc */
-  function api(action, payload) {
+  function api(action, payload, opts) {
     payload = payload || {};
     if (S.token) payload.token = S.token;
     if (S.viewAs && S.viewAs.employeeId && !payload.viewAs && action !== 'auth.logout') payload.viewAs = S.viewAs.employeeId;
     var sentToken = S.token;
     return new Promise(function (resolve, reject) {
-      HRIS.transport(action, payload).then(function (res) {
+      HRIS.transport(action, payload, opts).then(function (res) {
         if (!res) return reject(new Error('No response from the server.'));
         if (res.ok) return resolve(res.data);
         var err = new Error(res.error || 'Something went wrong.');
@@ -757,6 +761,7 @@ var App = (function () {
   function afterLogin(res) {
     S.token = res.token; store.set('hris_token', res.token);
     store.del(SNAP_KEY);
+    try { HRIS.clearReadCache(); } catch (e) {}
     if (res.mustChangePassword) { S.user = res.user; return renderChangePassword(true); }
     if (res.needsOnboarding) { S.user = res.user; return renderOnboarding(true); }
     return start();
@@ -954,6 +959,8 @@ var App = (function () {
       S.pending = sess.home.pendingCount || 0;
       S.pendingAcks = sess.home.pendingAcks || 0;
       S.pendingSign = (sess.home.signRequests || []).length;
+      // Home's own read (app.home) is the same payload: file it, so a re-render never asks again.
+      if (!S.viewAs) { try { HRIS.seedRead('app.home', {}, sess.home); } catch (e) {} }
     }
   }
   function saveSnapshot(sess) { if (S.viewAs) return; store.setJson(SNAP_KEY, { at: Date.now(), tokenTail: String(S.token).slice(-8), sess: sess }); }
@@ -962,29 +969,90 @@ var App = (function () {
     if (!snap || !snap.sess || !snap.sess.boot || !snap.sess.boot.user) return null;
     if (snap.tokenTail !== String(S.token).slice(-8)) return null;
     if (Date.now() - (snap.at || 0) > SNAP_MAX_AGE_MS) return null;
-    return snap.sess;
+    var sess = snap.sess;
+    if (sess.home && sess.home.today && sess.home.today !== todayStr()) sess = rollToToday(sess);
+    return sess;
+  }
+  /* A snapshot from an earlier day still paints the shell, the leave balance
+     and the lists at once, but what it says about "today" is no longer true.
+     Those parts are reset to the start-of-day state until the session that is
+     already on its way replaces them (a punch is validated by the server
+     regardless of what the screen showed). */
+  function rollToToday(sess) {
+    var h = JSON.parse(JSON.stringify(sess.home)), t = todayStr();
+    h.today = t; h.prettyDate = pretty(t);
+    h.weekday = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][new Date().getDay()];
+    h.attendance = h.attendance || {};
+    h.attendance.day = { date: t };
+    h.teamToday = null;
+    h.celebrations = []; h.outThisWeek = [];
+    var out = {}; for (var k in sess) out[k] = sess[k];
+    out.home = h;
+    return out;
+  }
+  /* Reads issued in the same tick as app.session ride in the same request,
+     so Home's month strip and the Attendance screen are ready together with
+     the session instead of one round trip after it. */
+  function warmBoot() {
+    if (S.viewAs) return;
+    api('att.month', { month: monthKey() }).catch(function () {});
+    api('att.today').catch(function () {});
+  }
+  function fetchSession() {
+    var p = api('app.session', {}, { fresh: true });
+    warmBoot();
+    S.sessionP = p;
+    var done = function () { if (S.sessionP === p) S.sessionP = null; };
+    p.then(done, done);
+    return p;
   }
   function start() {
-    return api('app.session').then(function (sess) {
+    return fetchSession().then(function (sess) {
       applySession(sess); saveSnapshot(sess);
       if (!window.location.hash) window.location.hash = '#/home';
-      render(); prefetchModules();
+      render(); prefetchModules(); prefetchData();
       HRIS.splashOut && HRIS.splashOut();
     });
   }
+  /* Refreshes the session behind whatever is on screen. Cached reads are kept
+     (a pull-to-refresh marks them all for re-checking instead), so a refresh
+     never drops the screen back to a skeleton. */
   function refreshSession(loud) {
     if (S.refreshing) return;
     S.refreshing = true;
-    try { HRIS.clearReadCache(); } catch (e) {}
-    api('app.session').then(function (sess) {
+    if (loud) { try { HRIS.markAllDirty(); } catch (e) {} }
+    fetchSession().then(function (sess) {
       S.refreshing = false;
       var wasUser = S.user;
       applySession(sess); saveSnapshot(sess);
-      if (S.route === 'home' || !S.route || loud) render({ quiet: !loud });
+      if (S.route === 'home' || !S.route || loud) render({ quiet: true });
       else if (wasUser && (wasUser.role !== S.user.role)) render();
       else syncShellBadges();
       if (loud) toast('Up to date.', 'ok', 1400);
+      prefetchData();
     }).catch(function () { S.refreshing = false; });
+  }
+  /* Once the session is in, the screens people open most are fetched in one
+     background request, so the first tap on each of them paints at once.
+     Anything fetched in the last PREFETCH_FRESH_MS is left alone: this runs
+     once per launch and is not a poll. */
+  var PREFETCH_FRESH_MS = 20 * 60 * 1000, prefetchedData = false;
+  function prefetchData() {
+    if (prefetchedData || !S.user || S.viewAs) return;
+    prefetchedData = true;
+    var me = S.user.employeeId;
+    var calls = [['leave.balance', {}], ['leave.types'], ['leave.list', { scope: 'me' }], ['payslips.mine'], ['payslips.summary'], ['notices.mine'],
+      ['people.profile', { employeeId: me }], ['letters.mine'], ['assets.mine', { employeeId: me }]];
+    if (S.user.isManager || can('leave.approve')) calls.push(['leave.approvals'], ['reg.pending'], ['compoff.pending'], ['letters.pendingSignatures']);
+    if (S.user.isManager || can('expenses.approve') || can('expenses.manage')) calls.push(['expenses.pending']);
+    var idle = window.requestIdleCallback || function (fn) { return setTimeout(fn, 1500); };
+    idle(function () {
+      if (!S.token || S.viewAs) return;
+      calls.forEach(function (c) {
+        if (HRIS.hasFresh(c[0], c[1] || {}, PREFETCH_FRESH_MS)) return;
+        api(c[0], c[1] ? JSON.parse(JSON.stringify(c[1])) : undefined).catch(function () {});
+      });
+    }, { timeout: 4000 });
   }
   function syncShellBadges() {
     try {
