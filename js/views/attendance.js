@@ -54,10 +54,31 @@ var Punch = (function () {
   }
   function step(t) { var e = document.getElementById('pg-text'); if (e) e.textContent = t; }
 
+  /**
+   * v3.1.5: location blocked → a help sheet with the exact steps for this phone
+   * (and, on iPhone inside the Google Script page, a button to the AVP HRIS app,
+   * where Safari can ask for location). "Try again" from the sheet continues this
+   * same punch, so the caller's .then() still runs once it succeeds.
+   */
+  function blocked(dir, err) {
+    var help = window.HRIS && HRIS.pwa && HRIS.pwa.geoHelp;
+    if (!help) { A.toast(err.message, 'err'); return Promise.reject(err); }
+    return new Promise(function (resolve, reject) {
+      help({
+        retry: function () { run(dir).then(resolve, reject); },
+        dismiss: function () { reject(err); }
+      });
+    });
+  }
+
   /** Full punch flow. dir = 'in' | 'out'. */
   function run(dir) {
-    progress('Reading your location…');
-    return A.getPosition()
+    var denied = false;
+    return A.geoPermission().then(function (state) {
+      if (state === 'denied') { denied = true; throw Object.assign(new Error('Location is blocked for AVP HRIS.'), { code: 'GEO_DENIED' }); }
+      progress('Reading your location…');
+      return A.getPosition();
+    })
       .then(function (pos) {
         step('Verifying you are inside the site boundary…');
         return A.api(dir === 'in' ? 'att.checkin' : 'att.checkout', {
@@ -74,7 +95,8 @@ var Punch = (function () {
         });
       })
       .catch(function (e) {
-        A.close();
+        if (!denied) A.close();
+        if (e && e.code === 'GEO_DENIED') return blocked(dir, e);
         A.toast(e.message, 'err');
         throw e;
       });
@@ -304,7 +326,11 @@ var Punch = (function () {
       if (!box.isConnected) return;
       box.className = 'geo bad';
       if (pulse) pulse.style.display = 'none';
-      if (txt) txt.textContent = e.message;
+      if (!txt) return;
+      txt.textContent = e.message;
+      if (e.code === 'GEO_DENIED' && window.HRIS && HRIS.pwa && HRIS.pwa.geoHelp) {
+        txt.innerHTML = A.esc(e.message) + ' <a href="#" data-geohelp>' + (HRIS.pwa.geoMovesToApp() ? 'Open the app to fix' : 'How to fix') + '</a>';
+      }
     });
   }
 
