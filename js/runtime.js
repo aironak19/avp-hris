@@ -370,7 +370,12 @@
      waiting to collect; ?install=1 arrives from the "Get the app" button. */
   window.HRIS_PWA_HANDOFF = !GS && q.get('pwa') === '1';
   window.HRIS_PWA_INSTALL = !GS && q.get('install') === '1';
-  if (!GS && (q.get('gc') || q.get('gerr') || q.get('glink') || q.get('glerr') || q.get('pwa') || q.get('install') || q.get('source'))) {
+  /* v3.2.1 — "Open AVP HRIS in Safari" from the location sheet arrives with ?punch=in|out:
+     the check-in / out carries on as soon as the person is signed in here. */
+  if (!GS && /^(in|out)$/.test(q.get('punch') || '')) {
+    try { sessionStorage.setItem('hris_resume_punch', JSON.stringify({ dir: q.get('punch'), at: Date.now(), wait: 600000 })); } catch (e) {}
+  }
+  if (!GS && (q.get('gc') || q.get('gerr') || q.get('glink') || q.get('glerr') || q.get('pwa') || q.get('install') || q.get('source') || q.get('punch'))) {
     try { history.replaceState(null, '', window.location.pathname + (window.SIGN_TOKEN ? '?sign=' + encodeURIComponent(window.SIGN_TOKEN) : '') + window.location.hash); } catch (e) {}
   }
   /* v3.1.5 — Apps Script page: Google sends people back to /exec?code=…&state=….
@@ -381,7 +386,7 @@
     try {
       google.script.url.getLocation(function (loc) {
         var p = (loc && loc.parameter) || {};
-        var JUNK = ['code', 'state', 'scope', 'authuser', 'prompt', 'hd', 'iss', 'session_state', 'gc', 'gerr', 'glink', 'glerr', 'pwa', 'install', 'source'];
+        var JUNK = ['code', 'state', 'scope', 'authuser', 'prompt', 'hd', 'iss', 'session_state', 'gc', 'gerr', 'glink', 'glerr', 'pwa', 'install', 'source', 'punch'];
         var keep = {}, dirty = false;
         Object.keys(p).forEach(function (k) { if (JUNK.indexOf(k) === -1) keep[k] = p[k]; else dirty = true; });
         if (dirty) google.script.history.replace(null, keep, (loc && loc.hash) || '');

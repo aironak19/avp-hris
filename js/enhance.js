@@ -440,61 +440,92 @@
         '<button class="btn btn-ghost btn-sm" data-pwa="copy">' + ic('copy') + ' Copy link</button></div>';
     }
     var geoAsked = 0;
+    var RESUME_KEY = 'hris_resume_punch';
+    /*
+     * v3.2.1 — one sheet with every way forward when the phone gives no usable location:
+     *   • Try again. On iPhone the app restarts first: once location was refused, Safari
+     *     keeps refusing inside the same page without asking; a fresh page asks properly.
+     *     The punch carries on by itself after the restart.
+     *   • Check in / out without location: the time is recorded on the server now and the
+     *     manager approves it, like a regularisation. Nobody is ever stuck.
+     *   • The exact settings for this phone, and (iPhone Home Screen app) "open in Safari".
+     */
     function geoHelp(opts) {
       opts = opts || {};
       if (!window.App || !App.modal) return;
       geoAsked++;
+      var code = (opts.error && opts.error.code) || 'GEO_DENIED';
+      var verb = opts.dir === 'out' ? 'Check out' : 'Check in';
       var settled = false;
-      var title, body, footer, steps, note = '';
+      var reloadRetry = isIOS && host === 'static' && !!opts.dir;
+      var title = code === 'GEO_DENIED' ? 'Location is blocked' : code === 'GEO_WEAK' ? 'GPS signal is too weak' : 'Couldn\'t get your location';
+      var why = code === 'GEO_DENIED'
+        ? (geoAsked > 1 ? '<b>Still blocked.</b> ' : '') + 'This ' + (isIOS ? 'iPhone' : 'device') + ' is not letting AVP HRIS read your location.'
+        : code === 'GEO_WEAK' ? esc((opts.error && opts.error.message) || 'Your location is too rough to check the office boundary.')
+          : 'Your phone did not return a location in time.';
+      why += ' Attendance uses it only at the moment you check in or out.';
+      var acts = '';
       if (geoMovesToApp()) {
-        title = 'Check in from the AVP HRIS app';
-        body = '<div class="pwa-warn">' + ic('pin', 18) + '<div><b>iPhone blocks location on this Google page</b>, even when Location is on. ' +
-          'The AVP HRIS app link is the same app — there Safari asks for your location and check-in works.</div></div>' +
-          '<a class="btn btn-primary btn-xl pwa-chrome-btn" href="' + esc(appUrl) + '?install=1" target="_top" data-pwa="open">' + ic('externallink') + ' Open the AVP HRIS app</a>' +
-          '<ol class="pwa-steps">' +
-          step(1, 'externallink', 'Tap <b>Open the AVP HRIS app</b> and sign in once <small>(employee code or Google)</small>') +
-          step(2, 'pin', 'When Safari asks to use your location, tap <b>Allow</b> — then check in') +
-          step(3, 'plussquare', 'Tap <b>Share → Add to Home Screen</b>, and delete the old AVP HRIS icon') +
-          '</ol>' + addrBox();
-        footer = '<button class="btn btn-secondary" data-close="btn">Close</button>';
-      } else {
-        title = 'Allow location to mark attendance';
-        if (isIOS) {
-          steps = step(1, 'settings', 'iPhone <b>Settings → Privacy &amp; Security → Location Services</b>: turn it on, then <b>Safari Websites → While Using the App</b>') +
-            step(2, 'pin', 'In Safari, tap the <b>page menu</b> left of the address <small>(aA or ☰)</small> → <b>Website Settings → Location → Allow</b>') +
-            step(3, 'refresh', 'Come back here and tap <b>Try again</b>');
-          note = standalone()
-            ? '<div class="hintbox mt2"><b>Using the AVP HRIS icon on your Home Screen?</b> Close it fully (swipe it away) and open it again. If it still never asks: delete the icon, open the link in Safari, allow location there, then add it to the Home Screen again.</div>'
-            : '';
-        } else if (isAndroid) {
-          steps = step(1, 'pin', 'Turn on <b>Location</b> <small>(swipe down from the top of the screen)</small>') +
-            step(2, 'settings', 'In Chrome, tap the icon left of the web address → <b>Permissions</b> <small>(or Site settings)</small> → <b>Location → Allow</b>') +
-            step(3, 'refresh', 'Come back here and tap <b>Try again</b>');
-          note = '<div class="hintbox mt2"><b>Still blocked?</b> Phone <b>Settings → Location → App location permissions → Chrome → Allow only while using the app</b>.' +
-            (standalone() ? ' For the installed app: Chrome <b>⋮ → Settings → Site settings → Location</b> → allow this site.' : '') + '</div>';
-        } else {
-          steps = step(1, 'settings', 'Click the icon at the left of the address bar → <b>Location → Allow</b>') +
-            step(2, 'refresh', 'Click <b>Try again</b> below') +
-            step(3, 'smartphone', 'On a Mac, also check <b>System Settings → Privacy &amp; Security → Location Services</b> for your browser');
-        }
-        body = '<div class="pwa-warn">' + ic('pin', 18) + '<div><b>' + (geoAsked > 1 ? 'Location is still blocked.' : 'Location is blocked for AVP HRIS.') + '</b> ' +
-          'Attendance needs your location once, at the moment you check in or out — it is never tracked in the background.</div></div>' +
-          '<ol class="pwa-steps">' + steps + '</ol>' + note +
-          (host !== 'static' && appUrl ? '<div class="hintbox mt2">Or use the <a href="' + esc(appUrl) + '?install=1" target="_top" data-pwa="open">AVP HRIS app link</a> instead of this Google page.</div>' : '');
-        footer = '<button class="btn btn-secondary" data-close="btn">Close</button>' +
-          (opts.retry ? '<button class="btn btn-primary" data-geo="retry">' + ic('refresh') + ' Try again</button>' : '');
+        acts += '<a class="btn btn-primary btn-xl geo-act" href="' + esc(appUrl) + '?install=1" target="_top" data-pwa="open">' + ic('externallink') + '<span>Open the AVP HRIS app<small>this Google page can\'t use location on iPhone</small></span></a>';
+      } else if (opts.retry) {
+        acts += '<button class="btn btn-primary btn-xl geo-act" data-geo="retry">' + ic('refresh') + '<span>Try again' + (reloadRetry ? '<small>the app restarts and asks for location</small>' : '') + '</span></button>';
       }
+      if (opts.noLocation) {
+        acts += '<button class="btn btn-secondary btn-xl geo-act" data-geo="noloc">' + ic('clock') + '<span>' + verb + ' without location<small>time recorded now · your manager approves it</small></span></button>';
+      }
+      var steps, note = '', where = isIOS ? 'iPhone' : isAndroid ? 'phone' : 'computer';
+      if (isIOS) {
+        steps = step(1, 'settings', '<b>Settings → Privacy &amp; Security → Location Services</b>: On. Then <b>Safari Websites → While Using the App</b>') +
+          step(2, 'settings', '<b>Settings → Apps → Safari → Location → Allow</b> <small>(older iPhones: Settings → Safari → Location)</small>') +
+          step(3, 'pin', 'Come back, tap <b>Try again</b> and choose <b>Allow</b> when the iPhone asks');
+        if (standalone() && appUrl && host === 'static') {
+          note = '<div class="hintbox mt2"><b>Still blocked in the Home Screen app?</b> <a href="' + esc(appUrl) + '?punch=' + (opts.dir === 'out' ? 'out' : 'in') + '" target="_blank" rel="noopener">Open AVP HRIS in Safari</a>, sign in once and the ' + verb.toLowerCase() + ' continues there.</div>';
+        }
+      } else if (isAndroid) {
+        steps = step(1, 'pin', 'Turn on <b>Location</b> <small>(swipe down from the top of the screen)</small>') +
+          step(2, 'settings', 'In Chrome, tap the icon left of the web address → <b>Permissions</b> <small>(or Site settings)</small> → <b>Location → Allow</b>') +
+          step(3, 'settings', 'Phone <b>Settings → Location → App location permissions → Chrome → Allow only while using the app</b>');
+      } else {
+        steps = step(1, 'settings', 'Click the icon at the left of the address bar → <b>Location → Allow</b>') +
+          step(2, 'smartphone', 'On a Mac, also check <b>System Settings → Privacy &amp; Security → Location Services</b> for your browser') +
+          step(3, 'refresh', 'Click <b>Try again</b>');
+      }
+      if (host !== 'static' && appUrl && !geoMovesToApp()) note += '<div class="hintbox mt2">Or use the <a href="' + esc(appUrl) + '?install=1" target="_top" data-pwa="open">AVP HRIS app link</a> instead of this Google page.</div>';
+      var body = '<div class="pwa-warn">' + ic('pin', 18) + '<div>' + why + '</div></div>' +
+        (acts ? '<div class="geo-acts">' + acts + '</div>' : '') +
+        '<details class="geo-fix"' + (geoAsked > 1 || !acts ? ' open' : '') + '><summary>' + ic('settings') + ' Allow location on this ' + where + '</summary>' +
+        '<ol class="pwa-steps">' + steps + '</ol>' + note + '</details>';
       App.modal({
         title: title,
         body: '<div class="pwa-guide geo-help">' + body + '</div>',
-        footer: footer,
+        footer: '<button class="btn btn-ghost" data-close="btn">Close</button>',
         onMount: function (root) {
           var box = root.querySelector('.backdrop');
           var r = root.querySelector('[data-geo="retry"]');
           if (r) r.addEventListener('click', function () {
             settled = true;
+            if (reloadRetry) {
+              try { sessionStorage.setItem(RESUME_KEY, JSON.stringify({ dir: opts.dir, at: Date.now() })); } catch (e) {}
+              r.disabled = true; r.querySelector('span').textContent = 'Restarting…';
+              setTimeout(function () { location.reload(); }, 150);
+              return;
+            }
             App.close(true);
             setTimeout(opts.retry, 40);
+          });
+          var n = root.querySelector('[data-geo="noloc"]');
+          if (n) n.addEventListener('click', function () {
+            settled = true;
+            var all = root.querySelectorAll('.geo-act');
+            Array.prototype.forEach.call(all, function (b) { b.setAttribute('disabled', ''); });
+            var label = n.querySelector('span'), was = label.innerHTML;
+            label.textContent = 'Recording…';
+            Promise.resolve().then(opts.noLocation).catch(function (e) {
+              settled = false;
+              Array.prototype.forEach.call(all, function (b) { b.removeAttribute('disabled'); });
+              label.innerHTML = was;
+              App.toast((e && e.message) || 'Could not record it. Please try again.', 'err', 6000);
+            });
           });
           // Closed any other way (X, backdrop, Esc, the app link) → the punch is abandoned.
           if (window.MutationObserver && box) {

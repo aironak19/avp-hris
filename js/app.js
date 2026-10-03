@@ -179,19 +179,65 @@ var App = (function () {
      GEO_UNSUPPORTED) so callers can open the "how to allow location" help
      instead of only flashing a toast. */
   function geoError(code, msg) { var e = new Error(msg); e.code = code; return e; }
+  /*
+   * v3.2.1 — fast, accurate location.
+   * One watchPosition() call collects fixes and keeps the most accurate one:
+   * it returns as soon as a fix is within `good` metres, after `settleMs` if the
+   * best fix is within `enough` metres, and at the latest after `budgetMs`
+   * (with the best fix so far — the server judges weak ones). A recent fix can be
+   * reused for `reuseMs`, so a punch right after the page warmed up is instant.
+   * Errors carry a code: GEO_DENIED / GEO_TIMEOUT / GEO_UNAVAILABLE / GEO_UNSUPPORTED.
+   */
+  var GEO_LAST = null;
   function getPosition(opts) {
+    opts = opts || {};
+    var good = opts.good || 35, enough = opts.enough || 150;
+    var settle = opts.settleMs || 3500, budget = opts.budgetMs || 15000;
+    var reuse = opts.reuseMs != null ? opts.reuseMs : (opts.maximumAge || 0);
+    if (reuse && GEO_LAST && Date.now() - GEO_LAST.at <= reuse && GEO_LAST.accuracy <= enough) {
+      return Promise.resolve({ lat: GEO_LAST.lat, lng: GEO_LAST.lng, accuracy: GEO_LAST.accuracy, at: GEO_LAST.at, reused: true });
+    }
     return new Promise(function (resolve, reject) {
       if (!navigator.geolocation) return reject(geoError('GEO_UNSUPPORTED', 'This browser cannot share your location. Please use Chrome or Safari on your phone.'));
-      navigator.geolocation.getCurrentPosition(
-        function (pos) { resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy }); },
-        function (err) {
-          if (err.code === 1) return reject(geoError('GEO_DENIED', 'Location is blocked for AVP HRIS, so attendance can\'t be marked.'));
-          if (err.code === 2) return reject(geoError('GEO_UNAVAILABLE', 'Your location is unavailable right now. Check that Location is on, move to an open area and try again.'));
-          if (err.code === 3) return reject(geoError('GEO_TIMEOUT', 'Getting your location timed out. Please try again.'));
-          reject(geoError('GEO_ERROR', 'We could not read your location.'));
-        },
-        Object.assign({ enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }, opts || {})
-      );
+      var best = null, done = false, watchId = null, lastErr = null, t0 = Date.now(), timers = [];
+      function finish(err) {
+        if (done) return;
+        done = true;
+        try { if (watchId !== null) navigator.geolocation.clearWatch(watchId); } catch (e) {}
+        timers.forEach(clearTimeout);
+        if (err) return reject(err);
+        GEO_LAST = best;
+        resolve({ lat: best.lat, lng: best.lng, accuracy: best.accuracy, at: best.at, ms: Date.now() - t0 });
+      }
+      function onFix(pos) {
+        if (done || !pos || !pos.coords) return;
+        var c = pos.coords, f = { lat: c.latitude, lng: c.longitude, accuracy: Math.max(1, Math.round(c.accuracy || 9999)), at: Date.now() };
+        if (!best || f.accuracy <= best.accuracy) best = f;
+        if (opts.onFix) { try { opts.onFix(best); } catch (e) {} }
+        if (best.accuracy <= good || (Date.now() - t0 >= settle && best.accuracy <= enough)) finish();
+      }
+      function onErr(err) {
+        if (done) return;
+        if (err && err.code === 1) return finish(geoError('GEO_DENIED', 'Location is blocked for AVP HRIS, so attendance can\'t be marked.'));
+        lastErr = err;   // 2 = unavailable, 3 = timeout: a fix can still arrive within the budget
+      }
+      try { watchId = navigator.geolocation.watchPosition(onFix, onErr, { enableHighAccuracy: true, maximumAge: 0, timeout: budget }); }
+      catch (e) { return finish(geoError('GEO_ERROR', 'We could not read your location.')); }
+      timers.push(setTimeout(function () { if (best && best.accuracy <= enough) finish(); }, settle));
+      timers.push(setTimeout(function () {
+        if (best) return finish();
+        finish(lastErr && lastErr.code === 2
+          ? geoError('GEO_UNAVAILABLE', 'Your phone could not find your location. Check that Location is on and try again.')
+          : geoError('GEO_TIMEOUT', 'Your phone did not share a location in time.'));
+      }, budget));
+    });
+  }
+  /** Quietly get a fix ready while the person looks at the screen — only if location is already allowed. */
+  function warmPosition() {
+    return geoPermission().then(function (state) {
+      if (state !== 'granted') return null;
+      if (GEO_LAST && Date.now() - GEO_LAST.at < 30000) return GEO_LAST;
+      return getPosition({ budgetMs: 10000, settleMs: 3000 }).catch(function () { return null; });
     });
   }
   /** 'granted' | 'denied' | 'prompt' | 'unknown' — never rejects. */
@@ -984,6 +1030,8 @@ var App = (function () {
     h.weekday = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][new Date().getDay()];
     h.attendance = h.attendance || {};
     h.attendance.day = { date: t };
+    // v3.2.1: yesterday's punch state (incl. a no-location punch waiting for approval) is not today's.
+    h.attendance.pendingPunch = null; h.attendance.canCheckIn = true; h.attendance.canCheckOut = false;
     h.teamToday = null;
     h.celebrations = []; h.outThisWeek = [];
     var out = {}; for (var k in sess) out[k] = sess[k];
@@ -1122,7 +1170,7 @@ var App = (function () {
   return {
     S: S, api: api, boot: boot, render: render, go: go, esc: esc,
     toast: toast, modal: modal, close: close, confirm: confirmDialog, prompt: prompt,
-    getPosition: getPosition, geoPermission: geoPermission, registerView: registerView, registerAdminTab: registerAdminTab,
+    getPosition: getPosition, geoPermission: geoPermission, warmPosition: warmPosition, registerView: registerView, registerAdminTab: registerAdminTab,
     money: money, openBlob: openBlob, readUpload: readUpload, fileField: fileField, relTime: relTime,
     pretty: pretty, shortD: shortD, dow: dow, todayStr: todayStr, monthKey: monthKey,
     monthLabel: monthLabel, addMonthKey: addMonthKey, hm: hm, initials: initials, days: days,
