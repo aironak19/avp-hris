@@ -38,6 +38,12 @@
         A.S.pendingSign = (h.signRequests || []).length;
         var u = A.S.user;
         var att = h.attendance.day || {};
+        // v3.2.1: a punch recorded without location shows straight away, marked "awaiting approval".
+        var pend = h.attendance.pendingPunch;
+        if (pend && pend.checkIn && !att.checkIn) {
+          att = Object.assign({}, att, { checkIn: pend.checkIn, checkOut: pend.checkOut || '', pendingApproval: true, locationName: '' });
+          if (pend.checkOut) att.workedMinutes = Math.max(0, hhmmToMin(pend.checkOut) - hhmmToMin(pend.checkIn));
+        }
         var bal = h.leave || {};
         var ms = h.attendance.monthSummary || {};
         var settings = (A.S.boot && A.S.boot.settings) || {};
@@ -50,10 +56,10 @@
         var pct = Math.min(100, Math.round(worked / shiftLen * 100));
         var heroSub, cta;
         if (att.checkIn && !att.checkOut) {
-          heroSub = 'You checked in at <b>' + A.esc(att.checkIn) + '</b>' + (att.locationName ? ' · ' + A.esc(att.locationName) : '') + (att.lateMinutes ? ' · late by ' + A.hm(att.lateMinutes) : ' · on time') + '. <span id="heroWorked">' + A.hm(worked) + '</span> so far.';
+          heroSub = 'You checked in at <b>' + A.esc(att.checkIn) + '</b>' + (att.pendingApproval ? ' · waiting for approval (no location)' : (att.locationName ? ' · ' + A.esc(att.locationName) : '') + (att.lateMinutes ? ' · late by ' + A.hm(att.lateMinutes) : ' · on time')) + '. <span id="heroWorked">' + A.hm(worked) + '</span> so far.';
           cta = '<button class="btn btn-light" data-act="checkout">' + icon('logout') + ' Check out</button>';
         } else if (att.checkIn && att.checkOut) {
-          heroSub = 'Day complete — <b>' + A.esc(att.checkIn) + ' → ' + A.esc(att.checkOut) + '</b>, ' + A.hm(att.workedMinutes) + ' worked. See you tomorrow.';
+          heroSub = 'Day complete — <b>' + A.esc(att.checkIn) + ' → ' + A.esc(att.checkOut) + '</b>, ' + A.hm(att.workedMinutes) + ' worked' + (att.pendingApproval ? ' · waiting for approval' : '') + '. See you tomorrow.';
           cta = '<button class="btn btn-glass" data-act="goAttendance">' + icon('calendarcheck') + ' Register</button>';
         } else if (att.status === 'HOLIDAY' || att.status === 'WEEKLY_OFF') {
           heroSub = 'Today is a ' + A.STATUS_LABEL[att.status].toLowerCase() + '. Enjoy the break — if you work today, claim a comp off.';
@@ -185,9 +191,13 @@
       if (heroTimer) clearInterval(heroTimer);
       heroTimer = setInterval(function () {
         var el = document.getElementById('heroWorked'); if (!el) { clearInterval(heroTimer); return; }
-        var h = A.S.home; if (!h || !h.attendance || !h.attendance.day || !h.attendance.day.checkIn) return;
-        el.textContent = A.hm(Math.max(0, nowMin() - hhmmToMin(h.attendance.day.checkIn)));
+        var h = A.S.home; if (!h || !h.attendance) return;
+        var ci = (h.attendance.day && h.attendance.day.checkIn) || (h.attendance.pendingPunch && h.attendance.pendingPunch.checkIn);
+        if (!ci) return;
+        el.textContent = A.hm(Math.max(0, nowMin() - hhmmToMin(ci)));
       }, 30000);
+      // v3.2.1: get a location fix ready while the person reads the screen, so Check in / out is instant.
+      if (document.querySelector('[data-act="checkin"], [data-act="checkout"]') && A.warmPosition) A.warmPosition();
     },
     actions: {
       goAttendance: function () { A.go('attendance'); },

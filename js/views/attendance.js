@@ -38,34 +38,46 @@ var Punch = (function () {
 
   /** Full-screen success moment: check mark, the facts, and a way back. */
   function success(dir, res) {
-    var title = dir === 'in' ? 'Checked in' : 'Checked out';
-    var line = dir === 'in'
-      ? A.esc(res.time) + (res.location ? ' · ' + A.esc(res.location) : '') + (res.lateMinutes ? ' · late by ' + A.hm(res.lateMinutes) : ' · on time')
-      : A.esc(res.time) + ' · ' + A.esc(res.worked) + ' worked';
+    var pendingApproval = res && res.status === 'PENDING_APPROVAL';
+    var title = pendingApproval ? (dir === 'in' ? 'Check-in sent for approval' : 'Check-out sent for approval') : (dir === 'in' ? 'Checked in' : 'Checked out');
+    var line = pendingApproval
+      ? A.esc(res.time) + ' (server time) · ' + (res.approverName ? A.esc(res.approverName) + ' will approve it' : 'your manager will approve it')
+      : dir === 'in'
+        ? A.esc(res.time) + (res.location ? ' · ' + A.esc(res.location) : '') + (res.lateMinutes ? ' · late by ' + A.hm(res.lateMinutes) : ' · on time')
+        : A.esc(res.time) + ' · ' + A.esc(res.worked) + ' worked';
     A.modal({
       title: '',
-      body: '<div style="text-align:center;padding:12px 0 6px"><div class="check-burst">' + icon('check') + '</div>' +
+      body: '<div style="text-align:center;padding:12px 0 6px"><div class="check-burst' + (pendingApproval ? ' is-pending' : '') + '">' + icon(pendingApproval ? 'clock' : 'check') + '</div>' +
         '<h2 style="margin:18px 0 4px">' + title + '</h2><div class="muted">' + line + '</div>' +
-        (dir === 'in' && !res.lateMinutes ? '<div class="tag tag-ok mt2">Have a great day</div>' : '') + '</div>',
+        (pendingApproval ? '<div class="tag tag-warn mt2">Recorded without location</div>' : dir === 'in' && !res.lateMinutes ? '<div class="tag tag-ok mt2">Have a great day</div>' : '') + '</div>',
       footer: '<button class="btn btn-primary btn-block" data-close="btn">Done</button>'
     });
     if (navigator.vibrate) { try { navigator.vibrate(dir === 'in' ? [12, 40, 12] : 12); } catch (e) {} }
-    setTimeout(function () { var bd = document.querySelector('#modal-root .backdrop'); if (bd) A.close(); }, 3200);
+    setTimeout(function () { var bd = document.querySelector('#modal-root .backdrop'); if (bd) A.close(); }, pendingApproval ? 4500 : 3200);
   }
   function step(t) { var e = document.getElementById('pg-text'); if (e) e.textContent = t; }
 
   /**
-   * v3.1.5: location blocked → a help sheet with the exact steps for this phone
-   * (and, on iPhone inside the Google Script page, a button to the AVP HRIS app,
-   * where Safari can ask for location). "Try again" from the sheet continues this
-   * same punch, so the caller's .then() still runs once it succeeds.
+   * v3.2.1: the phone did not give a usable location → one sheet with every way
+   * forward: try again (on iPhone the app reloads first — Safari keeps refusing
+   * inside the same page once location was refused), the exact settings for this
+   * phone, and "mark without location", which the manager approves. Whatever the
+   * person picks, the caller's .then() runs once the punch is recorded.
    */
   function blocked(dir, err) {
     var help = window.HRIS && HRIS.pwa && HRIS.pwa.geoHelp;
     if (!help) { A.toast(err.message, 'err'); return Promise.reject(err); }
     return new Promise(function (resolve, reject) {
       help({
+        dir: dir,
+        error: err,
         retry: function () { run(dir).then(resolve, reject); },
+        noLocation: function () {
+          var why = { GEO_DENIED: 'location blocked on the phone', GEO_TIMEOUT: 'phone did not return a location', GEO_UNAVAILABLE: 'phone could not find a location',
+            GEO_WEAK: 'GPS signal too weak', GEO_UNSUPPORTED: 'browser has no location support' }[err && err.code] || 'location unavailable';
+          return A.api('att.noLocation.submit', { dir: dir, device: navigator.userAgent, deviceId: deviceId(), detail: why })
+            .then(function (res) { A.close(true); success(dir, res); resolve(res); return res; });
+        },
         dismiss: function () { reject(err); }
       });
     });
@@ -73,14 +85,10 @@ var Punch = (function () {
 
   /** Full punch flow. dir = 'in' | 'out'. */
   function run(dir) {
-    var denied = false;
-    return A.geoPermission().then(function (state) {
-      if (state === 'denied') { denied = true; throw Object.assign(new Error('Location is blocked for AVP HRIS.'), { code: 'GEO_DENIED' }); }
-      progress('Reading your location…');
-      return A.getPosition();
-    })
+    progress('Finding your location…');
+    return A.getPosition({ reuseMs: 45000, onFix: function (f) { step('Location found · ±' + f.accuracy + ' m — improving…'); } })
       .then(function (pos) {
-        step('Verifying you are inside the site boundary…');
+        step('Location ±' + pos.accuracy + ' m · checking the site boundary…');
         return A.api(dir === 'in' ? 'att.checkin' : 'att.checkout', {
           lat: pos.lat, lng: pos.lng, accuracy: pos.accuracy,
           device: navigator.userAgent, deviceId: deviceId()
@@ -91,16 +99,42 @@ var Punch = (function () {
         }).catch(function (e) {
           A.close();
           if (e.code === 'OUT_OF_GEOFENCE') return outOfFence(e.details, dir, pos);
+          if (/accuracy is ±/i.test(e.message || '')) { e.code = 'GEO_WEAK'; return blocked(dir, e); }
           throw e;
         });
+      }, function (geoErr) {
+        A.close(true);
+        return blocked(dir, geoErr);
       })
       .catch(function (e) {
-        if (!denied) A.close();
-        if (e && e.code === 'GEO_DENIED') return blocked(dir, e);
+        if (e && /^GEO_/.test(e.code || '')) throw e;   // the sheet was closed — nothing more to say
+        A.close();
         A.toast(e.message, 'err');
         throw e;
       });
   }
+
+  /* After "Try again" on iPhone the app reloads itself; carry on with the same punch. */
+  var RESUME_KEY = 'hris_resume_punch';
+  function resumeAfterReload() {
+    var r = null;
+    try { r = JSON.parse(sessionStorage.getItem(RESUME_KEY) || 'null'); } catch (e) { r = null; }
+    if (!r) return;
+    var window_ = r.wait || 180000;
+    if (!r.dir || Date.now() - (r.at || 0) > window_) { try { sessionStorage.removeItem(RESUME_KEY); } catch (e) {} return; }
+    var tries = 0, maxTries = Math.ceil(window_ / 400);
+    (function wait() {
+      var ready = A.S && A.S.user && document.querySelector('.layout') && !document.querySelector('#modal-root .backdrop') && !(A.S.viewAs);
+      if (ready) {
+        try { sessionStorage.removeItem(RESUME_KEY); } catch (e) {}
+        run(r.dir).then(function () { if (A.refreshSession) A.refreshSession(); A.render(); }).catch(function () {});
+        return;
+      }
+      if (++tries < maxTries) setTimeout(wait, 400);
+      else { try { sessionStorage.removeItem(RESUME_KEY); } catch (e) {} }
+    })();
+  }
+  setTimeout(resumeAfterReload, 300);
 
   /** Offer a regularization when the punch lands outside every allowed fence. */
   function outOfFence(det, dir, pos) {
@@ -146,7 +180,7 @@ var Punch = (function () {
     });
   }
 
-  return { run: run, haversine: haversine };
+  return { run: run, haversine: haversine, RESUME_KEY: RESUME_KEY };
 })();
 
 (function () {
@@ -176,7 +210,7 @@ var Punch = (function () {
       var tab = params.tab || 'today';
       if (tab === 'today') {
         startClock();
-        locate();
+        locate();   // also leaves a fresh fix behind, so the punch button is instant
       }
     },
     actions: {
@@ -208,6 +242,11 @@ var Punch = (function () {
   function hhmmToMin(v) { var p = String(v || '').split(':'); return (+p[0] || 0) * 60 + (+p[1] || 0); }
   function todayTab(t) {
     var d = t.day || {};
+    var pend = t.pendingPunch;   // v3.2.1: punched without location, waiting for approval
+    if (pend && pend.checkIn && !d.checkIn) {
+      d = Object.assign({}, d, { checkIn: pend.checkIn, checkOut: pend.checkOut || '', pendingApproval: true, locationName: '' });
+      if (pend.checkOut) d.workedMinutes = Math.max(0, hhmmToMin(pend.checkOut) - hhmmToMin(pend.checkIn));
+    }
     var done = d.checkIn && d.checkOut;
     var shiftLen = Math.max(60, hhmmToMin(t.shift.end) - hhmmToMin(t.shift.start));
     var worked = done ? (d.workedMinutes || 0) : (d.checkIn ? Math.max(0, (new Date().getHours() * 60 + new Date().getMinutes()) - hhmmToMin(d.checkIn)) : 0);
@@ -240,7 +279,7 @@ var Punch = (function () {
       '      </div></div>' +
       '    <div class="punchgrid">' +
       '      <div><div class="stat-label">Check in</div><div style="font-weight:800;font-size:22px;margin-top:4px;font-family:var(--font-display)">' + (d.checkIn || '—') + '</div>' +
-      '        <div class="small muted">' + (d.checkIn ? (d.lateMinutes ? 'Late by ' + A.hm(d.lateMinutes) : 'On time') + (d.locationName ? ' · ' + A.esc(d.locationName) : '') : 'Shift starts ' + A.esc(t.shift.start)) + '</div></div>' +
+      '        <div class="small muted">' + (d.checkIn ? (d.pendingApproval ? 'Waiting for approval · no location' : (d.lateMinutes ? 'Late by ' + A.hm(d.lateMinutes) : 'On time') + (d.locationName ? ' · ' + A.esc(d.locationName) : '')) : 'Shift starts ' + A.esc(t.shift.start)) + '</div></div>' +
       '      <div><div class="stat-label">Check out</div><div style="font-weight:800;font-size:22px;margin-top:4px;font-family:var(--font-display)">' + (d.checkOut || '—') + '</div>' +
       '        <div class="small muted">' + (d.checkOut ? A.hm(d.workedMinutes) + ' worked' : 'Shift ends ' + A.esc(t.shift.end)) + '</div></div>' +
       '    </div>' +
