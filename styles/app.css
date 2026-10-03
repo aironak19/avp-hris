@@ -1085,6 +1085,19 @@ html.theme-reveal::view-transition-old(root) { animation: none; }
 .geo-help .hintbox a { font-weight: 700; }
 .geo a[data-geohelp] { font-weight: 700; color: inherit; text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; }
 .toast.bump { animation: toast-bump .32s var(--ease-spring); }
+/* v3.2.1 — location sheet: big actions first, settings folded underneath */
+.geo-acts { display: flex; flex-direction: column; gap: 10px; margin: var(--s3) 0 var(--s4); }
+.geo-act { width: 100%; justify-content: flex-start; text-align: left; gap: 12px; padding-top: 12px; padding-bottom: 12px; height: auto; min-height: 56px; }
+.geo-act > span { display: flex; flex-direction: column; line-height: 1.25; }
+.geo-act small { font-weight: 500; font-size: 11.5px; opacity: .78; margin-top: 2px; }
+.geo-act svg { width: 20px; height: 20px; flex: none; }
+.geo-act[disabled] { opacity: .6; pointer-events: none; }
+.geo-fix { border: 1px solid var(--line); border-radius: var(--r); padding: 10px 12px; background: var(--surface); }
+.geo-fix > summary { cursor: pointer; font-weight: 700; font-size: 13.5px; display: flex; align-items: center; gap: 8px; list-style: none; }
+.geo-fix > summary::-webkit-details-marker { display: none; }
+.geo-fix > summary svg { width: 16px; height: 16px; color: var(--accent); }
+.geo-fix[open] > summary { margin-bottom: 10px; }
+.check-burst.is-pending { background: var(--warn); box-shadow: 0 16px 40px -12px rgba(180, 83, 9, .5); }
 @keyframes toast-bump { 40% { transform: scale(1.03); } }
 
 .pwa-guide-head { display: flex; align-items: center; gap: 14px; margin-bottom: var(--s4); }
