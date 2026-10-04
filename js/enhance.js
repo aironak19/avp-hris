@@ -474,17 +474,35 @@
         acts += '<button class="btn btn-secondary btn-xl geo-act" data-geo="noloc">' + ic('clock') + '<span>' + verb + ' without location<small>time recorded now · your manager approves it</small></span></button>';
       }
       var steps, note = '', where = isIOS ? 'iPhone' : isAndroid ? 'phone' : 'computer';
+      /* v3.2.2 — with Precise Location off the phone only reports an area several km wide,
+         which can never pass the office check. A reading that rough (≥ 1 km) is almost
+         always that switch, so the sheet says so first and opens the steps. */
+      var accM = 0;
+      if (code === 'GEO_WEAK') {
+        var am = /±\s*([\d,]+)/.exec((opts.error && opts.error.message) || '');
+        accM = am ? Number(am[1].replace(/,/g, '')) : Number(opts.error && opts.error.accuracy) || 0;
+      }
+      var preciseOff = code === 'GEO_WEAK' && accM >= 1000;
+      var preciseIOS = '<b>Settings → Privacy &amp; Security → Location Services → Safari Websites</b> → turn on <b>Precise Location</b>';
+      var preciseAndroid = 'Phone <b>Settings → Location → App location permissions → Chrome</b> → turn on <b>Use precise location</b>';
+      if (code === 'GEO_WEAK' && (isIOS || isAndroid)) {
+        why = '<div>' + why + '</div><div class="geo-precise mt1">' + ic('pin', 15) + ' ' +
+          (preciseOff ? '<b>Precise Location looks switched off.</b> ' : '<b>Check Precise Location.</b> ') +
+          (isIOS ? preciseIOS : preciseAndroid) + ', then tap <b>Try again</b>.' +
+          (preciseOff ? '' : ' <small>If it is already on, step near a window or outside.</small>') + '</div>';
+      }
       if (isIOS) {
-        steps = step(1, 'settings', '<b>Settings → Privacy &amp; Security → Location Services</b>: On. Then <b>Safari Websites → While Using the App</b>') +
-          step(2, 'settings', '<b>Settings → Apps → Safari → Location → Allow</b> <small>(older iPhones: Settings → Safari → Location)</small>') +
-          step(3, 'pin', 'Come back, tap <b>Try again</b> and choose <b>Allow</b> when the iPhone asks');
+        steps = step(1, 'settings', '<b>Settings → Privacy &amp; Security → Location Services</b>: On') +
+          step(2, 'pin', '<b>Safari Websites</b> (same screen, near the bottom) → <b>While Using the App</b>, and turn on <b>Precise Location</b>') +
+          step(3, 'settings', '<b>Settings → Apps → Safari → Location → Allow</b> <small>(older iPhones: Settings → Safari → Location)</small>') +
+          step(4, 'refresh', 'Come back, tap <b>Try again</b> and choose <b>Allow</b> when the iPhone asks');
         if (standalone() && appUrl && host === 'static') {
           note = '<div class="hintbox mt2"><b>Still blocked in the Home Screen app?</b> <a href="' + esc(appUrl) + '?punch=' + (opts.dir === 'out' ? 'out' : 'in') + '" target="_blank" rel="noopener">Open AVP HRIS in Safari</a>, sign in once and the ' + verb.toLowerCase() + ' continues there.</div>';
         }
       } else if (isAndroid) {
         steps = step(1, 'pin', 'Turn on <b>Location</b> <small>(swipe down from the top of the screen)</small>') +
           step(2, 'settings', 'In Chrome, tap the icon left of the web address → <b>Permissions</b> <small>(or Site settings)</small> → <b>Location → Allow</b>') +
-          step(3, 'settings', 'Phone <b>Settings → Location → App location permissions → Chrome → Allow only while using the app</b>');
+          step(3, 'settings', 'Phone <b>Settings → Location → App location permissions → Chrome → Allow only while using the app</b>, and turn on <b>Use precise location</b>');
       } else {
         steps = step(1, 'settings', 'Click the icon at the left of the address bar → <b>Location → Allow</b>') +
           step(2, 'smartphone', 'On a Mac, also check <b>System Settings → Privacy &amp; Security → Location Services</b> for your browser') +

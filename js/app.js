@@ -189,6 +189,39 @@ var App = (function () {
    * Errors carry a code: GEO_DENIED / GEO_TIMEOUT / GEO_UNAVAILABLE / GEO_UNSUPPORTED.
    */
   var GEO_LAST = null;
+  /*
+   * v3.2.2 — one shared GPS session. The Home screen warms a fix while the person
+   * looks at it; a punch tapped during that warm-up now joins the same session (and
+   * starts from the best fix it already has) instead of opening a second one. A
+   * second concurrent watch could stay silent on some browsers until the budget ran
+   * out, which showed "Couldn't get your location" although the phone had a fix.
+   */
+  var GEO_W = null;
+  function geoSubscribe(sub) {
+    if (!GEO_W) {
+      var w = { subs: [], best: null, id: null };
+      w.id = navigator.geolocation.watchPosition(function (pos) {
+        if (!pos || !pos.coords) return;
+        var c = pos.coords, f = { lat: c.latitude, lng: c.longitude, accuracy: Math.max(1, Math.round(c.accuracy || 9999)), at: Date.now() };
+        if (!w.best || f.accuracy <= w.best.accuracy || Date.now() - w.best.at > 20000) w.best = f;
+        w.subs.slice().forEach(function (x) { x.fix(f); });
+      }, function (err) {
+        w.subs.slice().forEach(function (x) { x.err(err); });
+      }, { enableHighAccuracy: true, maximumAge: 0, timeout: 60000 });
+      GEO_W = w;
+    }
+    var mine = GEO_W;
+    mine.subs.push(sub);
+    if (mine.best) { var seed = mine.best; setTimeout(function () { if (mine.subs.indexOf(sub) !== -1) sub.fix(seed); }, 0); }
+    return function unsubscribe() {
+      var i = mine.subs.indexOf(sub);
+      if (i !== -1) mine.subs.splice(i, 1);
+      if (!mine.subs.length) {
+        try { navigator.geolocation.clearWatch(mine.id); } catch (e) {}
+        if (GEO_W === mine) GEO_W = null;
+      }
+    };
+  }
   function getPosition(opts) {
     opts = opts || {};
     var good = opts.good || 35, enough = opts.enough || 150;
@@ -199,19 +232,18 @@ var App = (function () {
     }
     return new Promise(function (resolve, reject) {
       if (!navigator.geolocation) return reject(geoError('GEO_UNSUPPORTED', 'This browser cannot share your location. Please use Chrome or Safari on your phone.'));
-      var best = null, done = false, watchId = null, lastErr = null, t0 = Date.now(), timers = [];
+      var best = null, done = false, stop = null, lastErr = null, t0 = Date.now(), timers = [];
       function finish(err) {
         if (done) return;
         done = true;
-        try { if (watchId !== null) navigator.geolocation.clearWatch(watchId); } catch (e) {}
         timers.forEach(clearTimeout);
+        if (stop) stop();
         if (err) return reject(err);
         GEO_LAST = best;
         resolve({ lat: best.lat, lng: best.lng, accuracy: best.accuracy, at: best.at, ms: Date.now() - t0 });
       }
-      function onFix(pos) {
-        if (done || !pos || !pos.coords) return;
-        var c = pos.coords, f = { lat: c.latitude, lng: c.longitude, accuracy: Math.max(1, Math.round(c.accuracy || 9999)), at: Date.now() };
+      function onFix(f) {
+        if (done || !f) return;
         if (!best || f.accuracy <= best.accuracy) best = f;
         if (opts.onFix) { try { opts.onFix(best); } catch (e) {} }
         if (best.accuracy <= good || (Date.now() - t0 >= settle && best.accuracy <= enough)) finish();
@@ -221,7 +253,7 @@ var App = (function () {
         if (err && err.code === 1) return finish(geoError('GEO_DENIED', 'Location is blocked for AVP HRIS, so attendance can\'t be marked.'));
         lastErr = err;   // 2 = unavailable, 3 = timeout: a fix can still arrive within the budget
       }
-      try { watchId = navigator.geolocation.watchPosition(onFix, onErr, { enableHighAccuracy: true, maximumAge: 0, timeout: budget }); }
+      try { stop = geoSubscribe({ fix: onFix, err: onErr }); }
       catch (e) { return finish(geoError('GEO_ERROR', 'We could not read your location.')); }
       timers.push(setTimeout(function () { if (best && best.accuracy <= enough) finish(); }, settle));
       timers.push(setTimeout(function () {
