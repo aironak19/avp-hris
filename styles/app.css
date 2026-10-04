@@ -1098,6 +1098,10 @@ html.theme-reveal::view-transition-old(root) { animation: none; }
 .geo-fix > summary svg { width: 16px; height: 16px; color: var(--accent); }
 .geo-fix[open] > summary { margin-bottom: 10px; }
 .check-burst.is-pending { background: var(--warn); box-shadow: 0 16px 40px -12px rgba(180, 83, 9, .5); }
+/* v3.2.2 — "turn on Precise Location" tip inside the weak-GPS sheet */
+.geo-precise { padding: 8px 10px; border-radius: var(--r-sm); background: var(--surface); border: 1px solid var(--warn-line); font-size: 12.5px; line-height: 1.5; }
+.geo-precise small { color: var(--muted); }
+.pwa-warn .geo-precise svg { width: 14px; height: 14px; margin: 0 2px 0 0; vertical-align: -2px; }
 @keyframes toast-bump { 40% { transform: scale(1.03); } }
 
 .pwa-guide-head { display: flex; align-items: center; gap: 14px; margin-bottom: var(--s4); }
