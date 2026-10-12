@@ -168,7 +168,8 @@
         var kinds = ['leave', 'regularisation', 'comp off', 'expense', 'signature'].filter(function (k) { return counts[k]; });
         inboxFocus = 0;
         return '' +
-          A.pageHead('Approvals', items.length ? items.length + ' item' + (items.length === 1 ? '' : 's') + ' waiting on you · <span class="kbd">j</span> <span class="kbd">k</span> move, <span class="kbd">a</span> approve, <span class="kbd">r</span> decline' : 'Nothing waiting on you.', '', 'Inbox') +
+          A.pageHead('Approvals', items.length ? items.length + ' item' + (items.length === 1 ? '' : 's') + ' waiting on you · <span class="kbd">j</span> <span class="kbd">k</span> move, <span class="kbd">a</span> approve, <span class="kbd">r</span> decline' : 'Nothing waiting on you.',
+            canApprovalReport() ? '<button class="btn btn-secondary noprint" data-act="goto" data-route="reports" data-params=\'{"tab":"approvals"}\' title="Every request that came in, decided or not, as a list and an Excel file">' + icon('download') + ' All requests · Excel</button>' : '', 'Inbox') +
           '<div class="subnav noprint">' +
           '<button data-act="kind" data-kind="all" class="' + (filter === 'all' ? 'on' : '') + '">All · ' + items.length + '</button>' +
           kinds.map(function (k) { return '<button data-act="kind" data-kind="' + k + '" class="' + (filter === k ? 'on' : '') + '">' + k.charAt(0).toUpperCase() + k.slice(1) + ' · ' + counts[k] + '</button>'; }).join('') +
@@ -627,6 +628,331 @@
     return { title: 'Leave register', sheets: [L] };
   }
 
+  /* ==================================================================
+     v3.3 — Approval requests: every request that came in (leave,
+     regularisation incl. punches without location, comp off, expenses,
+     resignations), whatever became of it. HR and admins only: the one
+     server read (reports.approvals) enforces that; this screen only
+     filters and lays it out, on the page and as an Excel workbook.
+     ================================================================== */
+  var AP_KINDS = ['LEAVE', 'REGULARISATION', 'COMP_OFF', 'EXPENSE', 'RESIGNATION'];
+  var AP_KIND = { LEAVE: 'Leave', REGULARISATION: 'Regularisation', COMP_OFF: 'Comp off', EXPENSE: 'Expense', RESIGNATION: 'Resignation' };
+  var AP_KIND_SHEET = { LEAVE: 'Leave', REGULARISATION: 'Regularisation', COMP_OFF: 'Comp off', EXPENSE: 'Expenses', RESIGNATION: 'Resignations' };
+  var AP_KIND_TAB = { LEAVE: '5E35B1', REGULARISATION: '1565C0', COMP_OFF: '8A5A00', EXPENSE: '1E7B34', RESIGNATION: 'C5221F' };
+  var AP_STATES = ['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED'];
+  var AP_STATE = { PENDING: 'Pending', APPROVED: 'Approved', REJECTED: 'Declined', CANCELLED: 'Cancelled' };
+  var AP_STATE_XL = {
+    PENDING: { fill: 'FFF3D6', color: '8A5A00' }, APPROVED: { fill: 'E6F4EA', color: '1E7B34' },
+    REJECTED: { fill: 'FCE4E4', color: 'C5221F' }, CANCELLED: { fill: 'F1F3F4', color: '5F6368' }
+  };
+  var AP_PERIODS = [['month', 'This month'], ['last', 'Last month'], ['3m', 'Last 90 days'], ['fy', 'This financial year'], ['all', 'All time'], ['custom', 'Custom dates']];
+  var AP_SCREEN_ROWS = 300;   // the page shows this many; the Excel always has them all
+
+  /** HR and admins only (the server enforces it; this just hides the door from everyone else). */
+  function canApprovalReport() {
+    var u = A.S.user || {};
+    return !!(u.isHR || A.can('leave.manage') || A.can('attendance.manage') || A.can('expenses.manage') || A.can('exit.manage'));
+  }
+  function isYmd(v) { return /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')); }
+  function ymdOf(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+  /** The dates a period stands for. The financial year starts on 1 April. */
+  function apRange(p) {
+    var period = p.period || '3m', now = new Date(), today = A.todayStr(), from = '', to = today;
+    if (period === 'all') { to = ''; }
+    else if (period === 'custom') {
+      from = isYmd(p.from) ? p.from : ''; to = isYmd(p.to) ? p.to : '';
+      if (from && to && from > to) { var sw = from; from = to; to = sw; }
+    }
+    else if (period === 'month') from = today.slice(0, 8) + '01';
+    else if (period === 'last') {
+      var k = A.addMonthKey(A.monthKey(), -1);
+      from = k + '-01'; to = k + '-' + String(new Date(+k.slice(0, 4), +k.slice(5, 7), 0).getDate()).padStart(2, '0');
+    }
+    else if (period === 'fy') from = (now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1) + '-04-01';
+    else { period = '3m'; from = ymdOf(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 89, 12)); }
+    return { period: period, from: from, to: to };
+  }
+  function apRangeLabel(range) {
+    if (!range.from && !range.to) return 'All time';
+    if (range.from && range.to) return A.pretty(range.from) + ' – ' + A.pretty(range.to);
+    return range.from ? 'From ' + A.pretty(range.from) : 'Up to ' + A.pretty(range.to);
+  }
+  function apCount(rows, field) { var c = {}; rows.forEach(function (r) { c[r[field]] = (c[r[field]] || 0) + 1; }); return c; }
+  function apGo(patch) {
+    var p = {}, cur = A.S.params || {};
+    ['period', 'from', 'to', 'kind', 'status'].forEach(function (k) { if (cur[k]) p[k] = cur[k]; });
+    Object.keys(patch).forEach(function (k) { if (patch[k]) p[k] = patch[k]; else delete p[k]; });
+    p.tab = 'approvals';
+    A.go('reports', p);
+  }
+  /** Which requests the answer covers: every employee's, for the types this role may manage. */
+  function apScopeLabel(scope) {
+    var have = AP_KINDS.filter(function (k) { return (scope || {})[k]; });
+    if (!have.length) return '';
+    return 'All employees' + (have.length < AP_KINDS.length ? ' (' + have.map(function (k) { return AP_KIND_SHEET[k].toLowerCase(); }).join(', ') + ')' : '');
+  }
+  function apQty(r) {
+    if (r.kind === 'EXPENSE') return '₹' + A.money(r.amount);
+    if (r.days !== '' && r.days !== undefined && r.days !== null) return A.days(r.days);
+    return '';
+  }
+  function apClip(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+
+  function approvalsReport(data, view) {
+    var rows = view.rows, all = data.rows || [];
+    var byKind = apCount(all.filter(function (r) { return view.status === 'all' || r.state === view.status; }), 'kind');
+    var byState = apCount(all.filter(function (r) { return view.kind === 'all' || r.kind === view.kind; }), 'state');
+    var kinds = AP_KINDS.filter(function (k) { return (data.scope || {})[k]; });
+    var kindTotal = kinds.reduce(function (n, k) { return n + (byKind[k] || 0); }, 0);
+    var tiles = [['PENDING', 'warn', 'clock', 'waiting for a decision'], ['APPROVED', 'ok', 'checkcircle', 'granted'], ['REJECTED', 'warn', 'xcircle', 'not approved'], ['CANCELLED', 'neutral', 'x', 'withdrawn or cancelled']];
+    var today = A.todayStr();
+
+    var filters =
+      '<div class="row wrap noprint" style="gap:10px;align-items:center;margin-bottom:4px">' +
+      '<select class="input" style="width:auto" data-change="apPeriod" aria-label="Period">' +
+      AP_PERIODS.map(function (p) { return '<option value="' + p[0] + '"' + (view.range.period === p[0] ? ' selected' : '') + '>' + p[1] + '</option>'; }).join('') + '</select>' +
+      (view.range.period === 'custom'
+        ? '<input class="input" style="width:auto" type="date" data-change="apFrom" aria-label="From" value="' + A.esc(view.range.from) + '" max="' + today + '">' +
+          '<span class="small muted">to</span>' +
+          '<input class="input" style="width:auto" type="date" data-change="apTo" aria-label="To" value="' + A.esc(view.range.to) + '" max="' + today + '">'
+        : '') +
+      '<span class="small muted">' + A.esc(apRangeLabel(view.range)) + ' · by the day the request was made · ' + A.esc(apScopeLabel(data.scope)) + '</span>' +
+      '</div>' +
+      '<div class="subnav noprint">' +
+      '<button data-act="apKind" data-kind="all" class="' + (view.kind === 'all' ? 'on' : '') + '">All types · ' + kindTotal + '</button>' +
+      kinds.map(function (k) { return '<button data-act="apKind" data-kind="' + k + '" class="' + (view.kind === k ? 'on' : '') + '">' + AP_KIND[k] + ' · ' + (byKind[k] || 0) + '</button>'; }).join('') +
+      '</div>';
+
+    var strip = '<div class="statstrip noprint">' + tiles.map(function (s) {
+      var n = byState[s[0]] || 0, on = view.status === s[0];
+      return '<div data-act="apStatus" data-status="' + s[0] + '" title="Show only ' + AP_STATE[s[0]].toLowerCase() + ' requests"' + (on ? ' style="outline:2px solid var(--accent);outline-offset:-2px"' : '') + '>' +
+        '<div class="stat-ic ' + s[1] + '">' + icon(s[2]) + '</div><div class="stat-label">' + AP_STATE[s[0]] + '</div>' +
+        '<div class="stat-value"><span data-countup="' + n + '">' + n + '</span></div><div class="stat-sub">' + s[3] + '</div></div>';
+    }).join('') + '</div>';
+
+    var note = '<div class="spread mt3" style="margin-bottom:10px"><div class="small muted">' +
+      (rows.length ? rows.length + ' request' + (rows.length === 1 ? '' : 's') + (rows.length > AP_SCREEN_ROWS ? ' — the first ' + AP_SCREEN_ROWS + ' are shown here; the Excel file has all of them' : '') : 'No requests match') +
+      (view.status !== 'all' ? ' · ' + AP_STATE[view.status].toLowerCase() + ' only' : '') +
+      (data.truncated ? ' · <b>Only the newest ' + all.length + ' of ' + data.total + ' were loaded — choose a shorter period to get the rest</b>' : '') +
+      '</div>' + (view.status !== 'all' || view.kind !== 'all' ? '<button class="btn btn-ghost btn-sm noprint" data-act="apClear">Clear filters</button>' : '') + '</div>';
+
+    if (!rows.length) return filters + strip + note + '<div class="panel">' + A.emptyState('inbox', all.length ? 'Nothing matches these filters.' : 'No approval requests were made in this period.') + '</div>';
+
+    var table = '<div class="tablewrap" id="reportTable"><table class="tbl"><thead><tr>' +
+      '<th>Requested</th><th style="min-width:150px">Employee</th><th>Type</th><th style="min-width:230px">Request</th><th>For</th><th style="min-width:120px">Status</th><th style="min-width:120px">Approver</th><th style="min-width:140px">Remark</th></tr></thead><tbody>' +
+      rows.slice(0, AP_SCREEN_ROWS).map(function (r) {
+        var when = r.from ? (r.to && r.to !== r.from ? A.shortD(r.from) + ' → ' + A.pretty(r.to) : A.pretty(r.from)) : '—';
+        var qty = apQty(r);
+        return '<tr>' +
+          '<td class="small" style="white-space:nowrap">' + (r.requestedOn ? A.pretty(r.requestedOn) : '—') + '<div class="muted">' + A.esc(String(r.requestedAt || '').slice(11, 16)) + '</div></td>' +
+          '<td><div style="font-weight:600">' + A.esc(r.employeeName) + '</div><div class="small muted">' + A.esc([r.employeeCode, r.department].filter(Boolean).join(' · ')) + '</div></td>' +
+          '<td class="small">' + AP_KIND[r.kind] + '</td>' +
+          '<td><div>' + A.esc(r.summary) + (qty ? ' · <b>' + A.esc(qty) + '</b>' : '') + '</div>' + (r.reason ? '<div class="small muted" style="font-style:italic;max-width:320px">' + A.esc(apClip(r.reason, 110)) + '</div>' : '') + '</td>' +
+          '<td class="small" style="white-space:nowrap">' + when + '</td>' +
+          '<td><span class="tag ' + ({ PENDING: 'tag-warn', APPROVED: 'tag-ok', REJECTED: 'tag-err', CANCELLED: 'tag-neutral' }[r.state] || 'tag-neutral') + '">' + (AP_STATE[r.state] || A.esc(r.state)) + '</span>' +
+          (r.stage && r.stage !== AP_STATE[r.state] ? '<div class="small muted" style="margin-top:3px">' + A.esc(r.stage) + '</div>' : '') + '</td>' +
+          '<td class="small">' + A.esc(r.state === 'PENDING' ? '' : r.approver || '') + (r.decidedOn ? '<div class="muted">' + A.pretty(r.decidedOn) + '</div>' : '') + '</td>' +
+          '<td class="small muted" style="max-width:220px">' + A.esc(apClip(r.remark, 90)) + '</td></tr>';
+      }).join('') + '</tbody></table></div>';
+    return filters + strip + note + table;
+  }
+
+  /* ---- the workbook: Summary · By employee · All requests · one sheet per type ---- */
+  function approvalsBook(data, rows, meta) {
+    var today = A.todayStr();
+    function z(i) { return i % 2 ? { fill: 'FAFAFA' } : {}; }
+    function txt(v, i, extra) { return t(v === undefined || v === null ? '' : v, stText(Object.assign({}, z(i), extra || {}))); }
+    function num(v, i, fmt, extra) { return t(v === '' || v === undefined || v === null ? '' : v, stNum(Object.assign({}, z(i), fmt ? { fmt: fmt } : {}, extra || {}))); }
+    function date(v, i) { return t(Xlsx.dateSerial(isYmd(v) ? v : ''), stNum(Object.assign({ fmt: 'dd-mmm-yyyy' }, z(i)))); }
+    function time(v, i) { return t(Xlsx.timeSerial(v), stNum(Object.assign({ fmt: 'hh:mm' }, z(i)))); }
+    function state(r) { var d = AP_STATE_XL[r.state] || AP_STATE_XL.CANCELLED; return t(AP_STATE[r.state] || r.state, { b: true, color: d.color, fill: d.fill, border: true, align: 'center' }); }
+    function daysBetween(a, b) { return isYmd(a) && isYmd(b) ? Math.round((Xlsx.dateSerial(b) - Xlsx.dateSerial(a))) : ''; }
+    /** Decided: days it took. Still pending: days it has been waiting (shown in amber). */
+    function taken(r, i) {
+      if (r.state === 'PENDING') { var w = daysBetween(r.requestedOn, today); return num(w === '' ? '' : Math.max(0, w), i, '0', { b: true, color: '8A5A00' }); }
+      var d = daysBetween(r.requestedOn, r.decidedOn); return num(d === '' ? '' : Math.max(0, d), i, '0');
+    }
+    var c0 = [
+      { h: '#', w: 5, cell: function (r, i) { return num(i + 1, i, null, { color: XL.muted }); } },
+      { h: 'Request ID', w: 13, cell: function (r, i) { return num(r.id, i, null, { color: XL.muted }); } }
+    ];
+    var who = [
+      { h: 'Employee', w: 24, left: true, cell: function (r, i) { return txt(r.employeeName, i, { b: true }); } },
+      { h: 'Code', w: 10, cell: function (r, i) { return num(r.employeeCode, i, null, { color: XL.muted }); } },
+      { h: 'Department', w: 16, left: true, cell: function (r, i) { return txt(r.department, i, { color: XL.muted }); } }
+    ];
+    var tail = [
+      { h: 'Status', w: 12, cell: function (r) { return state(r); } },
+      { h: 'Stage', w: 28, left: true, cell: function (r, i) { return txt(r.stage, i, { color: XL.muted }); } },
+      { h: 'Approver', w: 20, left: true, cell: function (r, i) { return txt(r.approver, i); } },
+      { h: 'Decided on', w: 13, cell: function (r, i) { return date(r.decidedOn, i); } },
+      { h: 'Days taken (waiting, if pending)', w: 14, cell: taken },
+      { h: 'Remark', w: 30, left: true, cell: function (r, i) { return txt(r.remark, i); } }
+    ];
+    function requested(label) { return { h: label || 'Requested on', w: 13, cell: function (r, i) { return date(r.requestedOn, i); } }; }
+    function reason(w) { return { h: 'Reason', w: w || 36, left: true, cell: function (r, i) { return txt(r.reason, i); } }; }
+    function d(r) { return r.detail || {}; }
+
+    function sheet(name, tab, sub, cols, list, opts) {
+      opts = opts || {};
+      var S = { name: name, tab: tab, rows: [], merges: [], cols: cols.map(function (c) { return c.w; }), landscape: true, footer: ORG() + ' · ' + sub };
+      headerBlock(S.rows, S.merges, cols.length, ORG(), sub, meta.note + ' · ' + list.length + ' request' + (list.length === 1 ? '' : 's') + ' on this sheet');
+      S.rows.push({ h: 30, cells: cols.map(function (c) { return t(c.h, stHead(c.left ? 'left' : 'center')); }) });
+      var f = S.rows.length;
+      list.forEach(function (r, i) { S.rows.push({ h: 17, cells: cols.map(function (c) { return c.cell(r, i); }) }); });
+      var last = S.rows.length;
+      if (list.length && opts.sum) {
+        S.rows.push({ h: 20, cells: cols.map(function (c, ci) {
+          if (ci === 2) return t('Total', stTotal('left'));
+          if (!c.sum) return t('', stTotal());
+          var col = Xlsx.colName(ci), total = 0;
+          for (var rr = f; rr < last; rr++) total += +S.rows[rr].cells[ci].v || 0;
+          return { f: 'SUM(' + col + (f + 1) + ':' + col + last + ')', v: Math.round(total * 100) / 100, s: stTotal('center', c.sum) };
+        }) });
+      }
+      S.freeze = { row: f, col: opts.freezeCol === undefined ? 3 : opts.freezeCol };
+      if (list.length) S.filter = 'A' + f + ':' + Xlsx.colName(cols.length - 1) + last;
+      S.printRows = '$' + f + ':$' + f;
+      return S;
+    }
+    function of(kind) { return rows.filter(function (r) { return r.kind === kind; }); }
+
+    /* -- Summary -- */
+    var kinds = AP_KINDS.filter(function (k) { return (data.scope || {})[k] && (!meta.kind || meta.kind === 'all' || meta.kind === k); });
+    var SM = { name: 'Summary', tab: XL.accent, rows: [], merges: [], cols: [22, 11, 11, 11, 11, 11, 16, 18], footer: ORG() + ' · Approval requests' };
+    var sh = ['Type of request', 'Total', 'Pending', 'Approved', 'Declined', 'Cancelled', 'Days requested', 'Amount claimed (₹)'];
+    headerBlock(SM.rows, SM.merges, sh.length, ORG(), 'Approval requests · ' + meta.range, meta.note + ' · ' + rows.length + ' request' + (rows.length === 1 ? '' : 's'));
+    SM.rows.push({ h: 30, cells: sh.map(function (h, i) { return t(h, stHead(i === 0 ? 'left' : 'center')); }) });
+    var sf = SM.rows.length;
+    kinds.forEach(function (k, i) {
+      var list = of(k), c = apCount(list, 'state');
+      var daysSum = list.reduce(function (n, r) { return n + (+r.days || 0); }, 0), amt = list.reduce(function (n, r) { return n + (+r.amount || 0); }, 0);
+      SM.rows.push({ h: 18, cells: [
+        txt(AP_KIND_SHEET[k], i, { b: true }), num(list.length, i, '0', { b: true }),
+        num(c.PENDING || 0, i, '0', c.PENDING ? { b: true, color: AP_STATE_XL.PENDING.color } : {}), num(c.APPROVED || 0, i, '0'),
+        num(c.REJECTED || 0, i, '0', c.REJECTED ? { color: AP_STATE_XL.REJECTED.color } : {}), num(c.CANCELLED || 0, i, '0'),
+        num(k === 'LEAVE' || k === 'COMP_OFF' ? Math.round(daysSum * 100) / 100 : '', i, '0.0'), num(k === 'EXPENSE' ? Math.round(amt * 100) / 100 : '', i, '#,##0.00')
+      ] });
+    });
+    var sl = SM.rows.length;
+    if (kinds.length) {
+      var tot = [t('Total', stTotal('left'))];
+      for (var ci = 1; ci <= 7; ci++) {
+        var col = Xlsx.colName(ci), sum = 0;
+        for (var rr = sf; rr < sl; rr++) sum += +SM.rows[rr].cells[ci].v || 0;
+        tot.push({ f: 'SUM(' + col + (sf + 1) + ':' + col + sl + ')', v: Math.round(sum * 100) / 100, s: stTotal('center', ci === 7 ? '#,##0.00' : ci === 6 ? '0.0' : '0') });
+      }
+      SM.rows.push({ h: 20, cells: tot });
+    }
+    SM.rows.push({ h: 10, cells: [] });
+    [['Period', meta.range + ' (by the day each request was made)'], ['Filters', meta.filters], ['Covers', meta.scope], ['Days taken', 'For a decided request, days from request to decision. For a pending one, days it has been waiting as of ' + A.pretty(today) + '.'],
+      ['Expense claims', 'Pending covers claims waiting for the manager and claims the manager approved that wait for HR. Approved covers claims approved and claims already paid.'],
+      ['Sheets', 'By employee · All requests · then one sheet per type of request with every detail.']
+    ].forEach(function (line) {
+      SM.rows.push({ h: line[1].length > 110 ? 26 : 15, cells: [t(line[0], { b: true, sz: 9, color: XL.ink, valign: 'top' }), t(line[1], { sz: 9, color: XL.muted, wrap: true, valign: 'top', align: 'left' })] });
+      SM.merges.push('B' + SM.rows.length + ':' + Xlsx.colName(sh.length - 1) + SM.rows.length);
+    });
+    SM.freeze = { row: sf, col: 0 };
+
+    /* -- By employee -- */
+    var people = {}, order = [];
+    rows.forEach(function (r) {
+      var key = r.employeeId || r.employeeName;
+      if (!people[key]) { people[key] = { employeeName: r.employeeName, employeeCode: r.employeeCode, department: r.department, n: 0, PENDING: 0, APPROVED: 0, REJECTED: 0, CANCELLED: 0, days: 0, amount: 0 }; order.push(key); }
+      var p = people[key]; p.n++; p[r.state] = (p[r.state] || 0) + 1;
+      if (r.kind === 'LEAVE' && r.state === 'APPROVED') p.days += +r.days || 0;
+      if (r.kind === 'EXPENSE' && r.state !== 'REJECTED' && r.state !== 'CANCELLED') p.amount += +r.amount || 0;
+    });
+    var plist = order.map(function (k) { return people[k]; }).sort(function (a, b) { return String(a.employeeName).localeCompare(String(b.employeeName)); });
+    var BE = sheet('By employee', '6B6563', 'Approval requests by employee · ' + meta.range, [
+      { h: '#', w: 5, cell: function (r, i) { return num(i + 1, i, null, { color: XL.muted }); } }].concat(who, [
+      { h: 'Requests', w: 10, sum: '0', cell: function (r, i) { return num(r.n, i, '0', { b: true }); } },
+      { h: 'Pending', w: 10, sum: '0', cell: function (r, i) { return num(r.PENDING, i, '0', r.PENDING ? { b: true, color: AP_STATE_XL.PENDING.color } : {}); } },
+      { h: 'Approved', w: 10, sum: '0', cell: function (r, i) { return num(r.APPROVED, i, '0'); } },
+      { h: 'Declined', w: 10, sum: '0', cell: function (r, i) { return num(r.REJECTED, i, '0', r.REJECTED ? { color: AP_STATE_XL.REJECTED.color } : {}); } },
+      { h: 'Cancelled', w: 10, sum: '0', cell: function (r, i) { return num(r.CANCELLED, i, '0'); } },
+      { h: 'Leave days approved', w: 13, sum: '0.0', cell: function (r, i) { return num(Math.round(r.days * 100) / 100, i, '0.0'); } },
+      { h: 'Expenses claimed, not declined (₹)', w: 18, sum: '#,##0.00', cell: function (r, i) { return num(Math.round(r.amount * 100) / 100, i, '#,##0.00'); } }
+    ]), plist, { sum: true, freezeCol: 2 });
+    /* the Total label sits under "Employee" on this sheet */
+    if (plist.length) { var tr = BE.rows[BE.rows.length - 1].cells; tr[1] = t('Total', stTotal('left')); tr[2] = t('', stTotal()); }
+
+    /* -- All requests -- */
+    var ALL = sheet('All requests', XL.head, 'All approval requests · ' + meta.range, c0.concat([
+      { h: 'Type', w: 14, cell: function (r, i) { return num(AP_KIND[r.kind] || r.kind, i); } }], who, [
+      requested(),
+      { h: 'Request', w: 30, left: true, cell: function (r, i) { return txt(r.summary, i); } },
+      { h: 'From', w: 12, cell: function (r, i) { return date(r.from, i); } },
+      { h: 'To', w: 12, cell: function (r, i) { return date(r.to, i); } },
+      { h: 'Days', w: 8, cell: function (r, i) { return num(r.days, i, '0.0'); } },
+      { h: 'Amount (₹)', w: 13, cell: function (r, i) { return num(r.amount, i, '#,##0.00'); } },
+      reason()], tail), rows, { freezeCol: 4 });
+
+    var sheets = [SM, BE, ALL];
+
+    if (of('LEAVE').length) sheets.push(sheet(AP_KIND_SHEET.LEAVE, AP_KIND_TAB.LEAVE, 'Leave requests · ' + meta.range, c0.concat(who, [
+      requested('Applied on'),
+      { h: 'Leave type', w: 11, cell: function (r, i) { return num(d(r).leaveType, i, null, { b: true }); } },
+      { h: 'From', w: 12, cell: function (r, i) { return date(r.from, i); } },
+      { h: 'To', w: 12, cell: function (r, i) { return date(r.to, i); } },
+      { h: 'Days', w: 8, sum: '0.0', cell: function (r, i) { return num(r.days, i, '0.0', { b: true }); } },
+      { h: 'Paid days', w: 9, sum: '0.0', cell: function (r, i) { return num(d(r).paidDays, i, '0.0'); } },
+      { h: 'LWP days', w: 9, sum: '0.0', cell: function (r, i) { return num(d(r).lwpDays, i, '0.0', d(r).lwpDays ? { b: true, color: 'C5221F' } : {}); } },
+      { h: 'Sandwich days', w: 10, cell: function (r, i) { return num(d(r).sandwichDays, i, '0.0'); } },
+      reason(), { h: 'Handover to', w: 18, left: true, cell: function (r, i) { return txt(d(r).handoverTo, i); } }], tail), of('LEAVE'), { sum: true }));
+
+    if (of('REGULARISATION').length) sheets.push(sheet(AP_KIND_SHEET.REGULARISATION, AP_KIND_TAB.REGULARISATION, 'Attendance regularisation requests · ' + meta.range, c0.concat(who, [
+      requested(),
+      { h: 'Attendance date', w: 13, cell: function (r, i) { return date(d(r).attDate || r.from, i); } },
+      { h: 'Type', w: 18, left: true, cell: function (r, i) { return txt(r.summary, i, { b: true }); } },
+      { h: 'Check-in asked', w: 10, cell: function (r, i) { return time(d(r).checkIn, i); } },
+      { h: 'Check-out asked', w: 10, cell: function (r, i) { return time(d(r).checkOut, i); } },
+      { h: 'Marks the day as', w: 14, cell: function (r, i) { return num(d(r).requestedStatus ? label(d(r).requestedStatus) : '', i); } },
+      reason(44)], tail), of('REGULARISATION')));
+
+    if (of('COMP_OFF').length) sheets.push(sheet(AP_KIND_SHEET.COMP_OFF, AP_KIND_TAB.COMP_OFF, 'Comp off requests · ' + meta.range, c0.concat(who, [
+      requested(),
+      { h: 'Worked on', w: 13, cell: function (r, i) { return date(d(r).workedDate || r.from, i); } },
+      { h: 'Hours worked', w: 9, cell: function (r, i) { return num(d(r).hours || '', i, '0.0'); } },
+      { h: 'Days asked', w: 9, sum: '0.0', cell: function (r, i) { return num(r.days, i, '0.0', { b: true }); } },
+      { h: 'Valid till', w: 13, cell: function (r, i) { return date(d(r).expiry, i); } },
+      { h: 'Days used', w: 9, sum: '0.0', cell: function (r, i) { return num(d(r).consumedDays, i, '0.0'); } },
+      reason()], tail), of('COMP_OFF'), { sum: true }));
+
+    if (of('EXPENSE').length) sheets.push(sheet(AP_KIND_SHEET.EXPENSE, AP_KIND_TAB.EXPENSE, 'Expense claims · ' + meta.range, c0.concat(who, [
+      requested('Submitted on'),
+      { h: 'Expense date', w: 13, cell: function (r, i) { return date(d(r).expenseDate || r.from, i); } },
+      { h: 'Category', w: 14, left: true, cell: function (r, i) { return txt(d(r).category, i); } },
+      { h: 'Title', w: 24, left: true, cell: function (r, i) { return txt(d(r).title, i, { b: true }); } },
+      { h: 'Amount (₹)', w: 13, sum: '#,##0.00', cell: function (r, i) { return num(r.amount, i, '#,##0.00', { b: true }); } },
+      { h: 'Project', w: 14, left: true, cell: function (r, i) { return txt(d(r).projectRef, i); } },
+      { h: 'Receipt', w: 9, cell: function (r, i) { return num(d(r).hasReceipt ? 'Yes' : 'No', i, null, d(r).hasReceipt ? {} : { color: 'B45309' }); } },
+      { h: 'Description', w: 30, left: true, cell: function (r, i) { return txt(r.reason, i); } },
+      { h: 'Status', w: 12, cell: function (r) { return state(r); } },
+      { h: 'Stage', w: 28, left: true, cell: function (r, i) { return txt(r.stage, i, { color: XL.muted }); } },
+      { h: 'Manager', w: 18, left: true, cell: function (r, i) { return txt(d(r).managerName, i); } },
+      { h: 'Manager acted on', w: 13, cell: function (r, i) { return date(String(d(r).managerActionAt || '').slice(0, 10), i); } },
+      { h: 'Manager remark', w: 24, left: true, cell: function (r, i) { return txt(d(r).managerRemark, i); } },
+      { h: 'HR', w: 18, left: true, cell: function (r, i) { return txt(d(r).hrName, i); } },
+      { h: 'HR acted on', w: 13, cell: function (r, i) { return date(String(d(r).hrActionAt || '').slice(0, 10), i); } },
+      { h: 'HR remark', w: 24, left: true, cell: function (r, i) { return txt(d(r).hrRemark, i); } },
+      { h: 'Paid via', w: 11, cell: function (r, i) { return num(d(r).payVia ? label(d(r).payVia) : '', i); } },
+      { h: 'Paid on', w: 13, cell: function (r, i) { return date(d(r).paidOn, i); } },
+      { h: 'Payment ref', w: 14, left: true, cell: function (r, i) { return txt(d(r).paidRef, i); } },
+      { h: 'Days taken (waiting, if pending)', w: 14, cell: taken }]), of('EXPENSE'), { sum: true }));
+
+    if (of('RESIGNATION').length) sheets.push(sheet(AP_KIND_SHEET.RESIGNATION, AP_KIND_TAB.RESIGNATION, 'Resignations · ' + meta.range, c0.concat(who, [
+      requested('Submitted on'),
+      { h: 'Resignation date', w: 13, cell: function (r, i) { return date(d(r).resignationDate || r.from, i); } },
+      { h: 'Last day asked', w: 13, cell: function (r, i) { return date(d(r).requestedLastWorkingDate, i); } },
+      { h: 'Last day confirmed', w: 13, cell: function (r, i) { return date(d(r).confirmedLastWorkingDate, i); } },
+      { h: 'Notice (days)', w: 9, cell: function (r, i) { return num(d(r).noticePeriodDays || '', i, '0'); } },
+      { h: 'Reason category', w: 16, left: true, cell: function (r, i) { return txt(d(r).reasonCategory, i); } },
+      reason()], tail), of('RESIGNATION')));
+
+    return { title: 'Approval requests ' + meta.range, sheets: sheets };
+  }
+
   var lastReport = null;   // what is on screen, for the Excel download
 
   /* --------------------------------------------------------------- reports */
@@ -639,10 +965,11 @@
         '<div class="page-head">' +
         '<div><div class="kicker">Payroll-ready registers</div><h1>Reports</h1></div>' +
         '<div class="row wrap noprint">' +
-        '<div class="seg" style="width:auto">' +
+        '<div class="seg" style="width:auto;max-width:100%;overflow-x:auto;scrollbar-width:none">' +
         '<button data-act="tab" data-tab="attendance" class="' + (tab === 'attendance' ? 'on' : '') + '">Attendance</button>' +
         '<button data-act="tab" data-tab="today" class="' + (tab === 'today' ? 'on' : '') + '">Today</button>' +
         (A.S.user.isHR || A.can('leave.manage') ? '<button data-act="tab" data-tab="leave" class="' + (tab === 'leave' ? 'on' : '') + '">Leave register</button>' : '') +
+        (canApprovalReport() ? '<button data-act="tab" data-tab="approvals" class="' + (tab === 'approvals' ? 'on' : '') + '">Approvals</button>' : '') +
         '</div>' +
         '<button class="btn btn-secondary" data-act="print">' + icon('file') + ' Print</button>' +
         '<button class="btn btn-primary" data-act="excel">' + icon('download') + ' Download Excel</button>' +
@@ -655,6 +982,32 @@
       if (tab === 'leave') {
         return A.api('leave.register', {}).then(function (l) { lastReport = { tab: 'leave', data: l }; return head + leaveRegister(l); });
       }
+      if (tab === 'approvals') {
+        var range = apRange(params), ask = {};
+        if (range.from) ask.from = range.from;
+        if (range.to) ask.to = range.to;
+        var view = {
+          range: range,
+          kind: AP_KIND[params.kind] ? params.kind : 'all',
+          status: AP_STATE[params.status] ? params.status : 'all'
+        };
+        lastReport = null;
+        return A.api('reports.approvals', ask).then(function (data) {
+          view.rows = (data.rows || []).filter(function (r) { return (view.kind === 'all' || r.kind === view.kind) && (view.status === 'all' || r.state === view.status); });
+          var only = [view.kind === 'all' ? '' : AP_KIND[view.kind], view.status === 'all' ? '' : AP_STATE[view.status].toLowerCase()].filter(Boolean).join(', ');
+          lastReport = { tab: 'approvals', data: data, rows: view.rows, range: range, only: only, meta: {
+            range: apRangeLabel(range), kind: view.kind,
+            filters: (view.kind === 'all' ? 'All types' : AP_KIND[view.kind] + ' only') + ' · ' + (view.status === 'all' ? 'every status' : AP_STATE[view.status].toLowerCase() + ' only'),
+            scope: apScopeLabel(data.scope),
+            note: 'Generated ' + stamp() + ' · ' + apScopeLabel(data.scope) + (view.kind === 'all' && view.status === 'all' ? '' : ' · filtered')
+          } };
+          return head + approvalsReport(data, view);
+        }).catch(function (e) {
+          if (/unknown action/i.test(e.message || '')) return head + '<div class="panel">' + A.emptyState('inbox', 'This report needs the latest server update. Please ask the administrator to publish it.') + '</div>';
+          if (/only hr and admins/i.test(e.message || '')) return head + '<div class="panel">' + A.emptyState('inbox', e.message) + '</div>';
+          throw e;
+        });
+      }
       return A.api('att.matrix', { month: month }).then(function (m) { lastReport = { tab: 'attendance', data: m }; return head + matrixReport(m); });
     },
     actions: {
@@ -663,7 +1016,18 @@
       nextMonth: function () { A.go('reports', { tab: 'attendance', month: A.addMonthKey(A.S.params.month || A.monthKey(), 1) }); },
       print: function () { window.print(); },
       excel: function () { exportExcel(); },
-      csv: function () { exportExcel(); }
+      csv: function () { exportExcel(); },
+      apPeriod: function (el) {
+        var v = el.value, patch = { period: v, from: '', to: '' };
+        // Custom starts from the dates on screen, so nothing jumps.
+        if (v === 'custom') { var cur = apRange(A.S.params || {}); patch.from = cur.from || A.todayStr().slice(0, 8) + '01'; patch.to = cur.to || A.todayStr(); }
+        apGo(patch);
+      },
+      apFrom: function (el) { apGo({ period: 'custom', from: isYmd(el.value) ? el.value : '' }); },
+      apTo: function (el) { apGo({ period: 'custom', to: isYmd(el.value) ? el.value : '' }); },
+      apKind: function (el) { var k = el.getAttribute('data-kind'); apGo({ kind: k === 'all' ? '' : k }); },
+      apStatus: function (el) { var st = el.getAttribute('data-status'); apGo({ status: (A.S.params || {}).status === st ? '' : st }); },
+      apClear: function () { apGo({ kind: '', status: '' }); }
     }
   });
 
@@ -747,6 +1111,11 @@
       var book, name;
       if (r.tab === 'today') { book = todayBook(r.data, r.date); name = 'AVP Attendance ' + r.date + '.xlsx'; }
       else if (r.tab === 'leave') { book = leaveBook(r.data || []); name = 'AVP Leave register ' + A.todayStr() + '.xlsx'; }
+      else if (r.tab === 'approvals') {
+        if (!r.rows.length) return A.toast('There are no requests to download for these filters.', 'err');
+        book = approvalsBook(r.data, r.rows, r.meta);
+        name = 'AVP Approval requests ' + (r.range.from && r.range.to ? r.range.from + ' to ' + r.range.to : r.range.from ? 'from ' + r.range.from : r.range.to ? 'up to ' + r.range.to : 'all time') + (r.only ? ' (' + r.only + ')' : '') + '.xlsx';
+      }
       else { book = attendanceBook(r.data); name = 'AVP Attendance ' + (r.data.label || r.data.month || '') + '.xlsx'; }
       Xlsx.download(Xlsx.build(book), name);
       A.toast('Excel file downloaded — ' + name, 'ok', 3500);
