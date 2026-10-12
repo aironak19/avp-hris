@@ -160,6 +160,55 @@ const PROFILE = (id) => Object.assign({}, USER, {
 });
 
 /* ---------------------------------------------------------------- dispatch */
+/* v3.3 — Reports ▸ Approvals. Shaped like ApprovalReport.build() on the server:
+   every request that came in, newest first, filtered by the day it was made. */
+const APPROVAL_ROWS = (() => {
+  const people = [
+    ['E0003', 'AVP003', 'Kiran Shah', 'Structural', 'Engineer'], ['E0004', 'AVP004', 'Neha Joshi', 'Structural', 'Draftsperson'],
+    ['E0005', 'AVP005', 'Imran Sheikh', 'Site', 'Site Engineer'], ['E0006', 'AVP006', "Divya O'Brien & Co <test>", 'Accounts', 'Accountant']
+  ];
+  const rows = [];
+  const add = (i, kind, ago, state, f) => {
+    const p = people[i % people.length], on = shift(TODAY, -ago);
+    const decided = state === 'PENDING' ? '' : shift(on, 1 + (i % 3));
+    rows.push(Object.assign({
+      kind, id: kind.slice(0, 2) + '-' + String(1000 + rows.length), employeeId: p[0], employeeName: p[2], employeeCode: p[1], department: p[3], designation: p[4],
+      requestedAt: on + ' 1' + (i % 8) + ':2' + (i % 6) + ':00', requestedOn: on, state, status: state,
+      stage: state === 'PENDING' ? 'Waiting for Asha Patel' : state === 'APPROVED' ? 'Approved' : state === 'REJECTED' ? 'Declined' : 'Cancelled',
+      summary: '', from: on, to: on, days: '', amount: '', reason: 'Reason ' + (rows.length + 1), approver: 'Asha Patel',
+      decidedAt: decided ? decided + ' 10:00:00' : '', decidedOn: decided, remark: state === 'REJECTED' ? 'Not possible this week' : '', detail: {}
+    }, f));
+  };
+  const states = ['PENDING', 'APPROVED', 'APPROVED', 'REJECTED', 'CANCELLED', 'APPROVED'];
+  for (let i = 0; i < 14; i++) {
+    const st = states[i % states.length], d0 = shift(TODAY, -(i * 9) + 5), days = 1 + (i % 3) * 0.5;
+    add(i, 'LEAVE', i * 9 + 1, st, { summary: (i % 2 ? 'SL' : 'PL') + ' leave', from: d0, to: shift(d0, i % 3), days,
+      detail: { leaveType: i % 2 ? 'SL' : 'PL', paidDays: days, lwpDays: i % 5 === 4 ? 1 : 0, sandwichDays: 0, handoverTo: 'Kiran Shah' } });
+  }
+  for (let i = 0; i < 8; i++) {
+    const st = states[(i + 1) % states.length], d0 = shift(TODAY, -(i * 11) - 2), noLoc = i % 2 === 0;
+    add(i + 1, 'REGULARISATION', i * 11 + 1, st, { summary: noLoc ? 'No location' : 'Missed punch', from: d0, to: d0,
+      reason: noLoc ? 'Check-in at 09:3' + i + ' (server time) without location' : 'Forgot to check out',
+      detail: { regType: noLoc ? 'NO_LOCATION' : 'MISSED_PUNCH', attDate: d0, checkIn: '09:3' + i, checkOut: noLoc ? '' : '18:4' + i, requestedStatus: 'PRESENT' } });
+  }
+  for (let i = 0; i < 4; i++) {
+    const st = states[(i + 2) % states.length], d0 = shift(TODAY, -(i * 20) - 6);
+    add(i + 2, 'COMP_OFF', i * 20 + 4, st, { summary: 'Comp off for work on ' + d0, from: d0, to: d0, days: i % 2 ? 0.5 : 1,
+      detail: { workedDate: d0, hours: i % 2 ? 4 : 8, expiry: shift(d0, 90), consumedDays: 0 } });
+  }
+  const exp = [['SUBMITTED', 'PENDING', 'Waiting for Asha Patel'], ['MANAGER_APPROVED', 'PENDING', 'Manager approved, waiting for HR'], ['APPROVED', 'APPROVED', 'Approved, to be paid'], ['PAID', 'APPROVED', 'Paid'], ['REJECTED', 'REJECTED', 'Declined'], ['CANCELLED', 'CANCELLED', 'Cancelled']];
+  for (let i = 0; i < 9; i++) {
+    const e = exp[i % exp.length], d0 = shift(TODAY, -(i * 8) - 3), amt = 350.5 + i * 410;
+    add(i + 3, 'EXPENSE', i * 8 + 2, e[1], { status: e[0], stage: e[2], summary: (i % 2 ? 'Travel' : 'Stationery') + ' · Claim ' + (i + 1), from: d0, to: d0, amount: amt,
+      detail: { category: i % 2 ? 'Travel' : 'Stationery', title: 'Claim ' + (i + 1), expenseDate: d0, currency: 'INR', projectRef: 'P-' + (100 + i), payVia: 'PAYROLL', hasReceipt: i % 3 !== 0,
+        managerName: 'Asha Patel', managerActionAt: e[0] === 'SUBMITTED' ? '' : shift(d0, 2) + ' 11:00:00', managerRemark: '', hrName: e[1] === 'APPROVED' ? 'Ronak Mehta' : '',
+        hrActionAt: e[1] === 'APPROVED' ? shift(d0, 3) + ' 12:00:00' : '', hrRemark: '', paidOn: e[0] === 'PAID' ? shift(d0, 20) : '', paidRef: e[0] === 'PAID' ? 'NEFT-' + i : '' } });
+  }
+  add(1, 'RESIGNATION', 12, 'PENDING', { status: 'Requested', stage: 'Waiting for HR', summary: 'Resignation · Higher studies', from: shift(TODAY, -12), to: shift(TODAY, 18), approver: 'HR',
+    detail: { resignationDate: shift(TODAY, -12), requestedLastWorkingDate: shift(TODAY, 18), confirmedLastWorkingDate: '', noticePeriodDays: 30, reasonCategory: 'Higher studies' } });
+  return rows.sort((a, b) => (a.requestedAt < b.requestedAt ? 1 : -1));
+})();
+
 const ROUTES = {
   'app.config': () => ({
     installed: true, version: '1.6.0', appName: 'AVP HRIS',
@@ -222,7 +271,14 @@ const ROUTES = {
   'admin.stats': () => ({ headcount: 30, exited: 2, probation: 3, departments: [{ name: 'Structural', count: 18 }], today: HOME.teamToday.counts, pendingLeave: 1, pendingRegularization: 0, locations: 2, geofenced: 2, pendingExpenses: 0, openTickets: 0, openJobs: 1, exitsInProgress: 0, assetsIssued: 12, missingSalaryStructures: 0, noticesPublished: 1 }),
   'admin.settings': () => ({ rows: [] }),
   'admin.locations': () => LOCATIONS.map((l) => ({ LocationId: l.id, Name: l.name, Address: l.address, Latitude: l.lat, Longitude: l.lng, RadiusMeters: l.radius, Active: 'TRUE' })),
-  'admin.audit': () => []
+  'admin.audit': () => [],
+  'reports.approvals': (p) => {
+    const ok = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? v : '';
+    const from = ok(p.from), to = ok(p.to);
+    const rows = APPROVAL_ROWS.filter((r) => (!from || r.requestedOn >= from) && (!to || r.requestedOn <= to));
+    return { rows, total: rows.length, truncated: false, from, to, generatedAt: new Date().toISOString(),
+      scope: { LEAVE: 'all', COMP_OFF: 'all', REGULARISATION: 'all', EXPENSE: 'all', RESIGNATION: 'all' } };
+  }
 };
 
 /* Mirrors appBatch() in Rpc.gs: each entry is dispatched independently and
