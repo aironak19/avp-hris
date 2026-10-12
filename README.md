@@ -131,6 +131,24 @@ What still waits on the server: signing in, and writes (a punch, an
 approval). Those are one round trip each. The server half of v3.2 (a longer,
 write-through table cache in `Repo.gs`) shortens the server time inside it.
 
+### v3.3: approval requests report
+
+Reports ▸ **Approvals** lists every approval request that came in — leave,
+attendance regularisation (including punches made without location), comp off,
+expense claims and resignations — whatever became of it, for a chosen period,
+and **Download Excel** turns what is on screen into a workbook: Summary, By
+employee, All requests, and one sheet per type of request with every detail.
+The Approvals inbox has a shortcut to it.
+
+It is one read, `reports.approvals`, served by `ApprovalReport.gs` in the Apps
+Script project (hooked into the route table the same way as Roles and Pwa). The
+server decides who gets it: HR and admins only — for each type of request, the
+holders of that module's "manage" capability, who see every employee's
+requests. Managers and employees are refused; a manager's "approve" capability
+does not open this report. The client only filters and lays the answer out; type
+and status filters and the workbook are built in the browser with the same
+dependency-free .xlsx writer the other reports use.
+
 ---
 
 ## Repository layout
