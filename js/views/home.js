@@ -307,8 +307,8 @@
         var STATUS_TXT = { PROBATION: 'Probation', CONFIRMED: 'Confirmed', NOTICE_PERIOD: 'Notice period', EXITED: 'Exited' };
         var fields = [
           ['Employee code', p.code], ['Department', (p.department || '') + (p.section ? ' · ' + p.section : '')], ['Designation', p.designation],
-          ['Reporting manager', p.managerName || (mng ? 'Not assigned' : '—'), mng ? 'manager' : ''], ['Work site', p.locationName || (mng ? 'Not assigned' : '—'), mng ? 'site' : ''],
-          ['Date of joining', A.pretty(p.joinDate)], ['Employment type', p.employmentType || '—'],
+          ['Reporting manager', (p.managerName || (mng ? 'Not assigned' : '—')) + (p.managerName && !p.managerId && mng ? ' (name only — not linked)' : ''), mng ? 'manager' : ''], ['Work site', p.locationName || (mng ? 'Not assigned' : '—'), mng ? 'site' : ''],
+          ['Date of joining', A.pretty(p.joinDate)], ['Employment type', (A.empTypeLabel ? A.empTypeLabel(p.employmentType) : p.employmentType) || '—'],
           ['Employment status', (STATUS_TXT[p.status] || String(p.status || '').replace('_', ' ')) + (p.lastWorkingDate ? ' · last day ' + A.pretty(p.lastWorkingDate) : ''), mng ? 'status' : ''],
           ['Email', p.email || '—'], ['Personal / alternate email', p.altEmail || '—'],
           ['Google sign-in', p.googleEmail ? 'Linked · ' + p.googleEmail : (p.email || p.altEmail ? 'Not linked yet — any address above works once' : 'No email on file')],

@@ -79,7 +79,8 @@
       clearSel: function () { bulkSel = {}; A.render({ quiet: true }); },
       exportSel: function () { exportDirectory(DIR_LAST.filter(function (p) { return bulkSel[p.employeeId]; })); },
       exportAll: function () { exportDirectory(DIR_LAST); },
-      gap: function (el) { var o = {}; o[el.getAttribute('data-gap')] = '__none__'; A.go('people', o); }
+      gap: function (el) { var o = {}; o[el.getAttribute('data-gap')] = el.getAttribute('data-val') || '__none__'; A.go('people', o); },
+      linkNames: function () { linkManagersByName(); }
     }
   });
 
@@ -1124,7 +1125,19 @@
      (no self-reporting, no loops, real sites, unique codes and emails).
      ================================================================== */
   function canManage() { return !!(A.S.user && (A.S.user.isHR || A.can('people.manage'))); }
-  var EMP_TYPES = ['Full-time', 'Part-time', 'Contract', 'Consultant', 'Intern', 'Trainee'];
+  /* Stored the way the employee sheet already has them (FULL_TIME …); shown with friendly labels. */
+  var EMP_TYPES = [['FULL_TIME', 'Full-time'], ['PART_TIME', 'Part-time'], ['CONTRACT', 'Contract'], ['CONSULTANT', 'Consultant'], ['INTERN', 'Intern'], ['TRAINEE', 'Trainee']];
+  function empTypeLabel(v) {
+    var k = String(v || '').trim().toUpperCase().replace(/[\s-]+/g, '_');
+    for (var i = 0; i < EMP_TYPES.length; i++) if (EMP_TYPES[i][0] === k) return EMP_TYPES[i][1];
+    return String(v || '');
+  }
+  function empTypeCode(v) {
+    var k = String(v || '').trim().toUpperCase().replace(/[\s-]+/g, '_');
+    return EMP_TYPES.some(function (t2) { return t2[0] === k; }) ? k : String(v || '');
+  }
+  A.empTypeLabel = empTypeLabel;
+  var normName = function (n) { return String(n || '').trim().replace(/\s+/g, ' ').toLowerCase(); };
   var BLOOD = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
   var STATUS_OPTS = [['PROBATION', 'Probation'], ['CONFIRMED', 'Confirmed'], ['NOTICE_PERIOD', 'Notice period'], ['EXITED', 'Exited']];
   var STATUS_LABEL = { PROBATION: 'Probation', CONFIRMED: 'Confirmed', NOTICE_PERIOD: 'Notice period', EXITED: 'Exited' };
@@ -1306,7 +1319,7 @@
           { name: 'Designation', label: 'Designation', value: p.designation || '', list: 'em-dl-desig' },
           { name: 'Department', label: 'Department', value: p.department || '', list: 'em-dl-dept' },
           { name: 'Section', label: 'Section / team', value: p.section || '' },
-          { name: 'EmploymentType', label: 'Employment type', type: 'select', blank: '—', options: EMP_TYPES.map(function (x) { return [x, x]; }), value: p.employmentType || '' },
+          { name: 'EmploymentType', label: 'Employment type', type: 'select', blank: '—', options: EMP_TYPES, value: empTypeCode(p.employmentType), currentLabel: empTypeLabel(p.employmentType) },
           { name: 'ReportingManagerId', label: 'Reporting manager', type: 'select', blank: '— No reporting manager —', options: mgrs, value: p.managerId || '', currentLabel: (p.managerName || 'Current manager') + ' (inactive)', hint: 'Approves their leave, regularisation and expenses.' },
           { name: 'PrimaryLocationId', label: 'Work site (attendance location)', type: 'select', blank: '— No work site —', options: L.sites.map(function (s) { return [s.id, s.name]; }), value: p.locationId || '', currentLabel: (p.locationName || 'Current site') + ' (inactive)', hint: 'Check-in and check-out are allowed within this site\'s geofence.' },
           { name: 'Role', label: 'App role', type: 'select', options: emRoleOptions(p.role), value: p.role || 'EMPLOYEE', hint: 'Define more under Administration → Roles & permissions.' },
@@ -1411,7 +1424,7 @@
         { name: 'Phone', label: 'Mobile number', type: 'tel' },
         { name: 'Designation', label: 'Designation', list: 'em-dl-desig' },
         { name: 'Department', label: 'Department', list: 'em-dl-dept' },
-        { name: 'EmploymentType', label: 'Employment type', type: 'select', options: EMP_TYPES.map(function (x) { return [x, x]; }), value: 'Full-time' },
+        { name: 'EmploymentType', label: 'Employment type', type: 'select', options: EMP_TYPES, value: 'FULL_TIME' },
         { name: 'Gender', label: 'Gender', type: 'select', options: GENDERS, value: '' },
         { name: 'JoinDate', label: 'Date of joining', type: 'date', value: A.todayStr(), hint: 'Probation end is set from the policy (6 months) unless you change it later.' },
         { name: 'ReportingManagerId', label: 'Reporting manager', type: 'select', blank: '— Choose later —', options: mgrs, value: '' },
@@ -1492,7 +1505,8 @@
     emLists().then(function (L) {
       pickOne({
         title: 'Reporting manager — ' + p.name, current: p.managerId || '', none: '— No reporting manager —',
-        intro: 'Their leave, regularisation and expense requests go to this person for approval.',
+        intro: (!p.managerId && p.managerName ? '<b>' + A.esc(p.managerName) + '</b> is written as their manager but isn\'t linked to an employee record, so requests go to HR. Pick the right person to link it. ' : '') +
+          'Their leave, regularisation and expense requests go to this person for approval.',
         items: peopleItems(managerChoices(L.people, p.employeeId)),
         onSave: function (mid) { return A.api('people.save', { employeeId: p.employeeId, ReportingManagerId: mid }).then(function () { done(mid ? 'Reporting manager updated.' : 'Reporting manager removed.'); }); }
       });
@@ -1583,7 +1597,7 @@
     if (!hr) return editEmployee(p.employeeId);
     var tiles = [
       ['edit', 'edit', 'Edit all details', 'Job, contact, personal, statutory, bank and notes'],
-      ['manager', 'users', 'Reporting manager', p.managerName || 'Not assigned'],
+      ['manager', 'users', 'Reporting manager', p.managerName ? p.managerName + (p.managerId ? '' : ' · name only, not linked') : 'Not assigned'],
       ['site', 'mappin', 'Work site', p.locationName || 'Not assigned'],
       A.S.user.isHR ? ['role', 'shield', 'App role', p.roleName || A.roleLabel(p.role)] : null,
       ['status', 'usercheck', 'Employment status', (STATUS_LABEL[p.status] || p.status || '') + (p.lastWorkingDate ? ' · LWD ' + A.pretty(p.lastWorkingDate) : '')],
@@ -1655,12 +1669,12 @@
       }).catch(function (e) { A.toast(e.message, 'err'); });
       return;
     }
-    var listP = kind === 'type' ? Promise.resolve({ items: EMP_TYPES }) : emLists().then(function (L) { return { items: kind === 'department' ? L.departments : L.designations }; });
+    var listP = kind === 'type' ? Promise.resolve({ items: [] }) : emLists().then(function (L) { return { items: kind === 'department' ? L.departments : L.designations }; });
     listP.then(function (L) {
       A.modal({
         title: b.title + ' for ' + who,
         body: kind === 'type'
-          ? emField({ name: 'v', label: b.title, type: 'select', options: EMP_TYPES.map(function (x) { return [x, x]; }), value: 'Full-time' })
+          ? emField({ name: 'v', label: b.title, type: 'select', options: EMP_TYPES, value: 'FULL_TIME' })
           : emField({ name: 'v', label: b.title, list: 'em-dl-bulk', hint: 'Pick an existing one or type a new name.' }) + datalist('em-dl-bulk', L.items),
         footer: '<button class="btn btn-secondary" data-close="btn">Cancel</button><button class="btn btn-primary" id="bk-save">Apply to ' + A.esc(who) + '</button>',
         onMount: function (root) {
@@ -1686,7 +1700,7 @@
       var st = p.status === 'EXITED' ? ['Exited', 'NOT_MARKED'] : p.status === 'NOTICE_PERIOD' ? ['Notice period', 'HALF_DAY'] : (p.onProbation || p.status === 'PROBATION') ? ['Probation', 'HALF_DAY'] : ['Active', 'PRESENT'];
       D.rows.push({ h: 17, cells: [
         t(i + 1, stNum({ color: XL.muted })), t(p.name, stText({ b: true })), t(p.code || '', stNum({ color: XL.muted })),
-        t(p.department || '', stText()), t(p.designation || '', stText()), t(p.employmentType || '', stNum()),
+        t(p.department || '', stText()), t(p.designation || '', stText()), t(empTypeLabel(p.employmentType), stNum()),
         t(p.managerName || '', stText(p.managerName ? {} : { color: XL.muted })), t(p.locationName || '', stText(p.locationName ? {} : { color: XL.muted })),
         t(p.email || '', stText({ color: XL.muted })), t(p.phone || '', stNum()),
         t(Xlsx.dateSerial(ymd(p.joinDate)), stNum({ fmt: 'dd-mmm-yyyy' })), t(st[0], stStatus(st[1], false)),
@@ -1710,7 +1724,69 @@
 
   /* -------------------------------------------- directory (manage mode) */
   var bulkSel = {};
-  var DIR_LAST = [];
+  var DIR_LAST = [], DIR_ALL = [];
+
+  /**
+   * Imported sheets often carry the manager's NAME without linking it to that
+   * person's record, so approvals fall back to HR and the manager sees no team.
+   * Match each name to exactly one active employee and link it — showing who
+   * will be linked to whom first. Names that match nobody (or several people)
+   * are listed and left alone.
+   */
+  function linkManagersByName() {
+    var byName = {};
+    DIR_ALL.forEach(function (p) { if (p.status !== 'EXITED') (byName[normName(p.name)] = byName[normName(p.name)] || []).push(p); });
+    var groups = {}, order = [], unmatched = {};
+    DIR_ALL.filter(function (p) { return p.status !== 'EXITED' && !p.managerId && p.managerName; }).forEach(function (p) {
+      var c = (byName[normName(p.managerName)] || []).filter(function (m) { return m.employeeId !== p.employeeId; });
+      if (c.length === 1) {
+        var g = groups[c[0].employeeId];
+        if (!g) { g = groups[c[0].employeeId] = { mgr: c[0], ids: [] }; order.push(c[0].employeeId); }
+        g.ids.push(p.employeeId);
+      } else {
+        var u = unmatched[p.managerName] || (unmatched[p.managerName] = { many: c.length > 1, people: [] });
+        u.people.push(p.name);
+      }
+    });
+    var total = order.reduce(function (n, k) { return n + groups[k].ids.length; }, 0);
+    var unList = Object.keys(unmatched);
+    if (!total) {
+      A.modal({ title: 'Nothing to link', body: '<p>None of the manager names match exactly one active employee.</p>' + unmatchedHtml() });
+      return;
+    }
+    function unmatchedHtml() {
+      return unList.length ? '<div class="sect mt3"><h3 style="font-size:14px">Left as they are</h3></div>' + unList.map(function (n) {
+        return '<div class="rowline"><div class="grow"><div style="font-weight:600">' + A.esc(n) + '</div><div class="small muted">' +
+          (unmatched[n].many ? 'More than one employee has this name' : 'No active employee has this name') + ' · named as manager for ' + A.esc(unmatched[n].people.join(', ')) + '</div></div></div>';
+      }).join('') + '<p class="small muted">Set these with Reporting manager on the person, or in bulk.</p>' : '';
+    }
+    A.modal({
+      title: 'Link managers by name', wide: true,
+      body: '<p style="margin-top:0">These people have a manager written by name only. Linking makes it real: their leave, regularisation and expense requests go to that manager for approval (today they go to HR), and the manager sees them as their team. Anyone who would end up in a loop is skipped.</p>' +
+        order.map(function (k) {
+          var g = groups[k];
+          return '<div class="rowline"><div class="avatar sm">' + A.esc(g.mgr.initials || '') + '</div><div class="grow"><div style="font-weight:600">' + A.esc(g.mgr.name) + ' <span class="small muted">' + A.esc(g.mgr.code || '') + (g.mgr.designation ? ' · ' + A.esc(g.mgr.designation) : '') + '</span></div>' +
+            '<div class="small muted">' + g.ids.length + ' ' + (g.ids.length === 1 ? 'person' : 'people') + ' will report to them' + (g.mgr.role === 'EMPLOYEE' || !g.mgr.role ? ' · their app role becomes Manager so they can approve' : '') + '</div></div></div>';
+        }).join('') + unmatchedHtml(),
+      footer: '<button class="btn btn-secondary" data-close="btn">Cancel</button><button class="btn btn-primary" id="ln-go">' + icon('link') + ' Link ' + total + ' ' + (total === 1 ? 'person' : 'people') + '</button>',
+      onMount: function (root) {
+        root.querySelector('#ln-go').onclick = function () {
+          var stop = busy(root.querySelector('#ln-go'), 'Linking…'), done2 = 0, skipped = [];
+          order.reduce(function (pr, k) {
+            return pr.then(function () {
+              return A.api('admin.employees.update', { employeeIds: groups[k].ids, changes: { ReportingManagerId: k } }).then(function (r) { done2 += r.count || 0; skipped = skipped.concat(r.skipped || []); });
+            });
+          }, Promise.resolve()).then(function () {
+            A.close(true);
+            done(done2 + ' of ' + total + ' linked to their manager.');
+            if (skipped.length) setTimeout(function () {
+              A.modal({ title: skipped.length + ' not linked', body: skipped.map(function (s2) { return '<div class="rowline"><div class="grow"><div style="font-weight:600">' + A.esc(s2.name) + '</div><div class="small muted">' + A.esc(s2.reason) + '</div></div></div>'; }).join('') });
+            }, 80);
+          }).catch(function (e) { stop(); A.toast(e.message, 'err', 6000); A.render({ quiet: true }); });
+        };
+      }
+    });
+  }
   function dirFilter(list, q, prm) {
     var s = String(q || '').trim().toLowerCase();
     return list.filter(function (p) {
@@ -1721,7 +1797,9 @@
       if (st === 'exited' && p.status !== 'EXITED') return false;
       if (prm.department && p.department !== prm.department) return false;
       if (prm.site === '__none__' ? !!p.locationId : (prm.site && String(p.locationId) !== String(prm.site))) return false;
-      if (prm.manager === '__none__' ? !!p.managerId : (prm.manager && String(p.managerId) !== String(prm.manager))) return false;
+      if (prm.manager === '__none__') { if (p.managerId || p.managerName) return false; }
+      else if (prm.manager === '__unlinked__') { if (p.managerId || !p.managerName) return false; }
+      else if (prm.manager && String(p.managerId) !== String(prm.manager)) return false;
       if (s && [p.name, p.code, p.email, p.designation, p.department, p.managerName, p.locationName].join(' ').toLowerCase().indexOf(s) === -1) return false;
       return true;
     });
@@ -1742,7 +1820,9 @@
         if (p.locationId) sites[p.locationId] = p.locationName || p.locationId;
         if (p.managerId) mgrs[p.managerId] = p.managerName || p.managerId;
       });
-      var noMgr = active.filter(function (p) { return !p.managerId; }).length, noSite = active.filter(function (p) { return !p.locationId; }).length;
+      var noMgr = active.filter(function (p) { return !p.managerId && !p.managerName; }).length, noSite = active.filter(function (p) { return !p.locationId; }).length;
+      var unlinked = active.filter(function (p) { return !p.managerId && p.managerName; }).length;
+      DIR_ALL = all;
       var list = dirFilter(all, params.q, params);
       DIR_LAST = list;
       Object.keys(bulkSel).forEach(function (id) { if (!all.some(function (p) { return p.employeeId === id; })) delete bulkSel[id]; });
@@ -1751,10 +1831,12 @@
         '<div class="field em-search"><input class="input" id="pplSearch" placeholder="Search name, code, email, designation…" value="' + A.esc(params.q || '') + '" autocomplete="off"></div>' +
         selectHtml('department', 'Department', [['', 'All departments']].concat(Object.keys(depts).sort().map(function (d) { return [d, d]; })), params.department) +
         selectHtml('site', 'Work site', [['', 'All sites'], ['__none__', 'No site assigned']].concat(byName(sites)), params.site) +
-        selectHtml('manager', 'Reporting manager', [['', 'Anyone'], ['__none__', 'No manager assigned']].concat(byName(mgrs)), params.manager) +
+        selectHtml('manager', 'Reporting manager', [['', 'Anyone'], ['__none__', 'No manager assigned']].concat(unlinked ? [['__unlinked__', 'Manager name not linked']] : []).concat(byName(mgrs)), params.manager) +
         selectHtml('status', 'Status', [['active', 'Active'], ['probation', 'On probation'], ['notice', 'Notice period'], ['exited', 'Exited'], ['all', 'Everyone']], params.status || 'active') +
         '</div>';
-      var gaps = (noMgr || noSite) ? '<div class="em-gaps">' +
+      var gaps = (noMgr || noSite || unlinked) ? '<div class="em-gaps">' +
+        (unlinked ? '<button class="tag tag-err" data-act="gap" data-gap="manager" data-val="__unlinked__">' + icon('alert', 13) + ' ' + unlinked + ' with a manager name that isn\'t linked</button>' +
+          '<button class="btn btn-primary btn-sm" data-act="linkNames">' + icon('link') + ' Link managers by name</button>' : '') +
         (noMgr ? '<button class="tag tag-warn" data-act="gap" data-gap="manager">' + icon('alert', 13) + ' ' + noMgr + ' without a reporting manager</button>' : '') +
         (noSite ? '<button class="tag tag-warn" data-act="gap" data-gap="site">' + icon('alert', 13) + ' ' + noSite + ' without a work site</button>' : '') + '</div>' : '';
       var allOn = list.length && list.every(function (p) { return bulkSel[p.employeeId]; });
@@ -1767,8 +1849,8 @@
             '<td class="em-ck"><input type="checkbox" data-ck="' + p.employeeId + '" aria-label="Select ' + A.esc(p.name) + '"' + (on ? ' checked' : '') + '></td>' +
             '<td><div class="row"><div class="avatar sm">' + A.esc(p.initials) + '</div><div style="line-height:1.25"><div style="font-weight:600">' + A.esc(p.name) + '</div>' +
             '<div class="small muted">' + A.esc(p.code) + (p.email ? ' · ' + A.esc(p.email) : '') + '</div></div></div></td>' +
-            '<td><div>' + A.esc(p.department || '—') + '</div><div class="small muted">' + A.esc(p.designation || '') + (p.employmentType ? ' · ' + A.esc(p.employmentType) : '') + '</div></td>' +
-            '<td class="small">' + (p.managerName ? A.esc(p.managerName) : '<span class="tag tag-warn">Not assigned</span>') + '</td>' +
+            '<td><div>' + A.esc(p.department || '—') + '</div><div class="small muted">' + A.esc(p.designation || '') + (p.employmentType ? ' · ' + A.esc(empTypeLabel(p.employmentType)) : '') + '</div></td>' +
+            '<td class="small">' + (p.managerId ? A.esc(p.managerName || '') : p.managerName ? A.esc(p.managerName) + ' <span class="tag tag-warn" title="This name is not linked to an employee record, so approvals go to HR instead">not linked</span>' : '<span class="tag tag-warn">Not assigned</span>') + '</td>' +
             '<td class="small">' + (p.locationName ? A.esc(p.locationName) : '<span class="tag tag-warn">Not assigned</span>') + '</td>' +
             '<td><div class="row" style="gap:6px">' + statusChip(p) + roleChip(p.role) + '</div></td>' +
             '<td class="right nowrap"><button class="btn btn-ghost btn-sm" data-act="quickEdit" data-id="' + p.employeeId + '" aria-label="Edit ' + A.esc(p.name) + '">' + icon('edit') + ' Edit</button></td></tr>';
