@@ -362,6 +362,12 @@
       }).join('') + '</div>';
     }).join('');
     var tools = (u.isHR || A.can('people.manage')) ? '<div class="sect mt4"><h3>People tools</h3></div><div class="cards mt2">' +
+      // v3.4 — one obvious way in to edit employees, managers and sites
+      '<div class="panel tight em-admincard"><div class="row" style="gap:10px"><div class="stat-ic inline">' + icon('users') + '</div><div><div style="font-size:14px;font-weight:600">Employees</div>' +
+      '<p class="small muted" style="margin:2px 0 0">Edit anyone\'s details, reporting manager, work site, role and status — one person or many at once. Export the list to Excel.</p></div></div>' +
+      '<div class="row wrap mt2" style="gap:8px"><button class="btn btn-primary btn-sm" data-act="goto" data-route="people" data-params="{}">Open employees</button>' +
+      '<button class="btn btn-secondary btn-sm" data-act="goto" data-route="people" data-params=\'{"manager":"__none__"}\'>Without a manager</button>' +
+      '<button class="btn btn-secondary btn-sm" data-act="goto" data-route="people" data-params=\'{"site":"__none__"}\'>Without a site</button></div></div>' +
       '<div class="panel tight"><div class="row" style="gap:10px"><div class="stat-ic neutral inline">' + icon('refresh') + '</div><div><div style="font-size:14px;font-weight:600">Re-sync from the source spreadsheet</div>' +
       '<p class="small muted" style="margin:2px 0 0">Adds new employees and refreshes names, departments and dates. Passwords, roles and site mapping are never overwritten.</p></div></div>' +
       '<button class="btn btn-secondary btn-sm mt2" data-act="importEmp">Import / refresh employees</button></div>' +

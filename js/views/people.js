@@ -18,10 +18,12 @@
         '<button data-act="view" data-view="org" class="' + (view === 'org' ? 'on' : '') + '">Org chart</button>' +
         '</div>' +
         '<a class="btn btn-secondary" href="#/openings">' + icon('briefcase') + ' Openings</a>' +
-        (A.S.user.isHR || A.can('people.manage') ? '<button class="btn btn-primary" data-act="add">' + icon('plus') + ' Add person</button>' : '') +
+        (canManage() && view === 'directory' ? '<button class="btn btn-secondary" data-act="exportAll">' + icon('download') + ' Export</button>' : '') +
+        (canManage() ? '<button class="btn btn-primary" data-act="add">' + icon('userplus') + ' Add employee</button>' : '') +
         '</div></div>';
 
       if (view === 'org') return A.api('people.org').then(function (t) { return head + '<div class="panel">' + orgHtml(t) + '</div>'; });
+      if (canManage()) return manageDirectory(head, params);   // v3.4: filters, gaps, bulk changes, export
 
       return A.api('people.directory', { q: params.q || '', department: params.department || '' })
         .then(function (list) {
@@ -58,15 +60,26 @@
         var t = null;
         s.addEventListener('input', function () {
           clearTimeout(t);
-          t = setTimeout(function () { A.go('people', { q: s.value, department: params.department || '' }); }, 400);
+          t = setTimeout(function () {
+            var next = { q: s.value, department: params.department || '', site: params.site || '', manager: params.manager || '', status: params.status || '' };
+            Object.keys(next).forEach(function (k) { if (!next[k]) delete next[k]; });
+            A.go('people', next);
+          }, canManage() ? 250 : 400);
         });
       }
+      if (canManage()) mountManage(host, params);
     },
     actions: {
       view: function (el) { A.go('people', { view: el.getAttribute('data-view') }); },
       filter: function (el) { A.go('people', { department: el.getAttribute('data-department'), q: A.S.params.q || '' }); },
       open: function (el) { A.go('me', { id: el.getAttribute('data-id') }); },
-      add: function () { addPerson(); }
+      add: function () { addEmployee(); },
+      quickEdit: function (el) { editEmployee(el.getAttribute('data-id')); },
+      bulk: function (el) { bulkChange(Object.keys(bulkSel), el.getAttribute('data-kind')); },
+      clearSel: function () { bulkSel = {}; A.render({ quiet: true }); },
+      exportSel: function () { exportDirectory(DIR_LAST.filter(function (p) { return bulkSel[p.employeeId]; })); },
+      exportAll: function () { exportDirectory(DIR_LAST); },
+      gap: function (el) { var o = {}; o[el.getAttribute('data-gap')] = '__none__'; A.go('people', o); }
     }
   });
 
@@ -78,6 +91,7 @@
   }
   function statusChip(p) {
     if (p.status === 'EXITED') return '<span class="tag tag-neutral">Exited</span>';
+    if (p.status === 'NOTICE_PERIOD') return '<span class="tag tag-warn">Notice period</span>';
     if (p.onProbation || p.status === 'PROBATION') return '<span class="tag tag-warn">Probation</span>';
     return '<span class="tag tag-ok">Active</span>';
   }
@@ -93,29 +107,6 @@
     }
     if (!nodes.length) return '<div class="empty">No reporting structure mapped yet.</div>';
     return '<div>' + nodes.map(function (n) { return branch(n, 0); }).join('') + '</div>';
-  }
-
-  function addPerson() {
-    A.prompt('Add employee', [
-      { name: 'EmployeeCode', label: 'Employee code', placeholder: 'EMP100' },
-      { name: 'FullName', label: 'Full name' },
-      { name: 'Email', label: 'Email (also used for "Sign in with Google")', type: 'email' },
-      { name: 'Department', label: 'Department' },
-      { name: 'Designation', label: 'Designation' },
-      { name: 'JoinDate', label: 'Date of joining', type: 'date', value: A.todayStr() },
-      { name: 'Gender', label: 'Gender', type: 'select', options: [{ value: 'MALE', label: 'Male' }, { value: 'FEMALE', label: 'Female' }, { value: 'OTHER', label: 'Other' }] }
-    ], 'Create').then(function (v) {
-      if (!v) return;
-      return A.api('people.save', v).then(function (r) {
-        A.render();
-        A.modal({
-          title: 'Employee created — ' + (r.employeeCode || v.EmployeeCode),
-          body: '<p>Share this one-time password with the employee in person. It is shown only once and they must change it at first sign-in.</p>' +
-            '<div class="outline" style="text-align:center;font-size:28px;font-weight:800;letter-spacing:.06em">' + A.esc(r.defaultPassword) + '</div>' +
-            '<p class="small muted mt2">Lost it? Use Administration → Overview → Reset employee password.</p>'
-        });
-      });
-    }).catch(function (e) { A.toast(e.message, 'err'); });
   }
 
   /* ------------------------------------------------------------- approvals */
@@ -1123,4 +1114,711 @@
       A.toast('Could not create the Excel file: ' + e.message, 'err');
     }
   }
+  /* ==================================================================
+     v3.4 — Employee management (HR, or a role with people.manage).
+     Everything HR does to an employee record lives here: the full edit
+     form (job, reporting line, work site, contact, personal, statutory,
+     bank, notes), the quick changes (manager, site, role, status / exit,
+     password), and the same changes for many people at once. Only fields
+     that actually changed are sent; the server checks every rule again
+     (no self-reporting, no loops, real sites, unique codes and emails).
+     ================================================================== */
+  function canManage() { return !!(A.S.user && (A.S.user.isHR || A.can('people.manage'))); }
+  var EMP_TYPES = ['Full-time', 'Part-time', 'Contract', 'Consultant', 'Intern', 'Trainee'];
+  var BLOOD = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
+  var STATUS_OPTS = [['PROBATION', 'Probation'], ['CONFIRMED', 'Confirmed'], ['NOTICE_PERIOD', 'Notice period'], ['EXITED', 'Exited']];
+  var STATUS_LABEL = { PROBATION: 'Probation', CONFIRMED: 'Confirmed', NOTICE_PERIOD: 'Notice period', EXITED: 'Exited' };
+  var GENDERS = [['', '—'], ['MALE', 'Male'], ['FEMALE', 'Female'], ['OTHER', 'Other']];
+
+  /** People, active sites and the department / designation lists the forms offer. */
+  function emLists() {
+    var boot = A.S.boot || {};
+    var fromBoot = function () { return (boot.locations || []).map(function (x) { return { id: x.id, name: x.name }; }); };
+    var sites = A.api('admin.locations').then(function (l) {
+      return (Array.isArray(l) ? l : []).filter(function (x) { return x.active !== false; }).map(function (x) { return { id: x.id, name: x.name }; });
+    }, fromBoot);
+    return Promise.all([A.api('people.picklist'), sites]).then(function (r) {
+      var people = Array.isArray(r[0]) ? r[0] : [];
+      var dept = {}, desig = {};
+      (boot.departments || []).forEach(function (d) { dept[d] = 1; });
+      (boot.designations || []).forEach(function (d) { desig[d] = 1; });
+      people.forEach(function (p) { if (p.department) dept[p.department] = 1; if (p.designation) desig[p.designation] = 1; });
+      return { people: people, sites: r[1] && r[1].length ? r[1] : fromBoot(), departments: Object.keys(dept).sort(), designations: Object.keys(desig).sort() };
+    });
+  }
+  /** Everyone below `id` in the reporting tree — none of them can become `id`'s manager. */
+  function descendantsOf(people, id) {
+    var kids = {}, out = {}, stack = [String(id)];
+    people.forEach(function (p) { if (p.managerId) (kids[String(p.managerId)] = kids[String(p.managerId)] || []).push(String(p.id)); });
+    while (stack.length) {
+      (kids[stack.pop()] || []).forEach(function (k) { if (!out[k]) { out[k] = true; stack.push(k); } });
+    }
+    return out;
+  }
+  function managerChoices(people, forId) {
+    var bad = forId ? descendantsOf(people, forId) : {};
+    return people.filter(function (p) { return String(p.id) !== String(forId || '') && !bad[String(p.id)]; });
+  }
+  function optionsHtml(opts, value) {
+    var v = value == null ? '' : String(value), found = false;
+    var html = opts.map(function (o) {
+      var sel = String(o[0]) === v; if (sel) found = true;
+      return '<option value="' + A.esc(o[0]) + '"' + (sel ? ' selected' : '') + '>' + A.esc(o[1]) + '</option>';
+    }).join('');
+    return { html: html, found: found };
+  }
+  function ymd(v) {
+    var s = String(v || '').trim(), m;
+    if ((m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s))) return m[1] + '-' + m[2] + '-' + m[3];
+    if ((m = /^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})$/.exec(s))) return m[3] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[1]).slice(-2);
+    return '';
+  }
+  function nextCode(people) {
+    var best = null;
+    people.forEach(function (p) {
+      var m = /^([A-Za-z]*)(\d+)$/.exec(String(p.code || ''));
+      if (!m) return;
+      var n = +m[2];
+      if (!best || (m[1].toUpperCase() === best.prefix && n > best.n) || (!best.prefix && m[1])) best = { prefix: m[1].toUpperCase(), n: n, width: m[2].length };
+    });
+    if (!best) return '';
+    var s = String(best.n + 1);
+    while (s.length < best.width) s = '0' + s;
+    return best.prefix + s;
+  }
+
+  /* -------------------------------------------------- form building blocks */
+  function emField(f) {
+    var id = 'em-' + f.name, v = f.value == null ? '' : String(f.value), input;
+    if (f.type === 'select') {
+      var o = optionsHtml(f.options, v);
+      var extra = !o.found && v ? '<option value="' + A.esc(v) + '" selected>' + A.esc(f.currentLabel || v) + '</option>' : '';
+      input = '<select class="input" id="' + id + '" name="' + f.name + '">' + (f.blank !== undefined ? '<option value="">' + A.esc(f.blank) + '</option>' : '') + extra + o.html + '</select>';
+    } else if (f.type === 'textarea') {
+      input = '<textarea class="input" id="' + id + '" name="' + f.name + '" rows="2">' + A.esc(v) + '</textarea>';
+    } else {
+      input = '<input class="input" id="' + id + '" name="' + f.name + '" type="' + (f.type || 'text') + '" value="' + A.esc(v) + '"' +
+        (f.list ? ' list="' + f.list + '"' : '') + (f.ph ? ' placeholder="' + A.esc(f.ph) + '"' : '') +
+        (f.type === 'tel' ? ' inputmode="tel"' : '') + (f.upper ? ' style="text-transform:uppercase"' : '') + ' autocomplete="off">';
+    }
+    return '<div class="field' + (f.full ? ' full' : '') + '"><label for="' + id + '">' + A.esc(f.label) + (f.req ? ' <span class="em-req">*</span>' : '') + '</label>' +
+      input + (f.hint ? '<div class="em-hint">' + f.hint + '</div>' : '') + '<div class="em-err" data-err="' + f.name + '"></div></div>';
+  }
+  function datalist(id, items) { return '<datalist id="' + id + '">' + items.map(function (x) { return '<option value="' + A.esc(x) + '"></option>'; }).join('') + '</datalist>'; }
+  function section(key, title, fields, note) {
+    return '<section class="em-sec" data-sec="' + key + '"><h4>' + A.esc(title) + '</h4>' + (note ? '<p class="small muted em-note">' + note + '</p>' : '') +
+      '<div class="formgrid">' + fields.map(emField).join('') + '</div></section>';
+  }
+  function readForm(root) {
+    var out = {};
+    root.querySelectorAll('[name]').forEach(function (el) { out[el.name] = el.value; });
+    return out;
+  }
+  function showErrors(root, errs) {
+    root.querySelectorAll('.em-err').forEach(function (n) { n.textContent = ''; });
+    root.querySelectorAll('.field.has-err').forEach(function (n) { n.classList.remove('has-err'); });
+    var first = null;
+    Object.keys(errs).forEach(function (k) {
+      var n = root.querySelector('[data-err="' + k + '"]');
+      if (!n) return;
+      n.textContent = errs[k];
+      n.parentNode.classList.add('has-err');
+      if (!first) first = n.parentNode;
+    });
+    if (first) { try { first.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) {} var i = first.querySelector('input,select,textarea'); if (i) i.focus({ preventScroll: true }); }
+    return !first;
+  }
+  var EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+  function validate(v, ctx) {
+    var e = {};
+    if ('FullName' in v && !String(v.FullName).trim()) e.FullName = 'Enter the full name.';
+    if ('EmployeeCode' in v && !String(v.EmployeeCode).trim()) e.EmployeeCode = 'Enter the employee code.';
+    ['Email', 'AltEmail', 'GoogleEmail'].forEach(function (k) { if (v[k] && !EMAIL_RE.test(String(v[k]).trim())) e[k] = 'This is not a valid email address.'; });
+    ['Phone', 'EmergencyContactPhone'].forEach(function (k) { if (v[k] && String(v[k]).replace(/\D/g, '').length < 7) e[k] = 'Enter a full phone number.'; });
+    if (v.PAN && !/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(String(v.PAN).trim().toUpperCase())) e.PAN = 'PAN looks like ABCDE1234F.';
+    if (v.BankIFSC && !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(String(v.BankIFSC).trim().toUpperCase())) e.BankIFSC = 'IFSC looks like HDFC0001234.';
+    if (v.UAN && !/^\d{12}$/.test(String(v.UAN).replace(/\s/g, ''))) e.UAN = 'UAN has 12 digits.';
+    if (v.JoinDate && v.ProbationEndDate && v.ProbationEndDate < v.JoinDate) e.ProbationEndDate = 'Probation can\'t end before the joining date.';
+    if (v.Status === 'NOTICE_PERIOD' && 'LastWorkingDate' in v && !v.LastWorkingDate) e.LastWorkingDate = 'Set the last working day for the notice period.';
+    if (v.JoinDate && v.LastWorkingDate && v.LastWorkingDate < v.JoinDate) e.LastWorkingDate = 'The last working day can\'t be before joining.';
+    if (ctx && ctx.id && v.ReportingManagerId && String(v.ReportingManagerId) === String(ctx.id)) e.ReportingManagerId = 'Someone can\'t report to themselves.';
+    return e;
+  }
+  function tidy(v) {
+    if (v.PAN) v.PAN = String(v.PAN).trim().toUpperCase();
+    if (v.BankIFSC) v.BankIFSC = String(v.BankIFSC).trim().toUpperCase();
+    if (v.EmployeeCode) v.EmployeeCode = String(v.EmployeeCode).trim().toUpperCase();
+    if (v.UAN) v.UAN = String(v.UAN).replace(/\s/g, '');
+    if (v.PFApplicable !== undefined) v.PFApplicable = v.PFApplicable === 'true';
+    if (v.ESIApplicable !== undefined) v.ESIApplicable = v.ESIApplicable === 'true';
+    return v;
+  }
+  function busy(btn, label) { if (!btn) return function () {}; var was = btn.innerHTML; btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> ' + A.esc(label || 'Saving…'); return function () { btn.disabled = false; btn.innerHTML = was; }; }
+  function afterSave(res, name) {
+    var warn = (res && res.warnings) || [];
+    if (!warn.length) return;
+    A.modal({
+      title: 'Saved — one more thing', body: '<div class="hintbox">' + warn.map(A.esc).join('<br>') + '</div>',
+      footer: '<button class="btn btn-secondary" data-close="btn">Later</button><button class="btn btn-primary" id="em-team">Reassign the team</button>',
+      onMount: function (root) {
+        root.querySelector('#em-team').onclick = function () {
+          A.api('people.directory', {}).then(function (list) {
+            var ids = list.filter(function (p) { return String(p.managerId) === String(res.employeeId); }).map(function (p) { return p.employeeId; });
+            bulkChange(ids, 'manager', name);
+          }).catch(function (e) { A.toast(e.message, 'err'); });
+        };
+      }
+    });
+  }
+  function done(msg) { A.toast(msg, 'ok'); A.render({ quiet: true }); }
+
+  /* ------------------------------------------------------- full edit form */
+  function editEmployee(id) {
+    var hr = canManage(), self = String(id) === String(A.S.user.employeeId);
+    if (!hr && !self) return A.toast('You can only edit your own details.', 'err');
+    Promise.all([A.api('people.profile', { employeeId: id }), hr ? emLists() : Promise.resolve(null)]).then(function (r) {
+      var p = r[0], L = r[1], em = p.emergency || {}, st = p.statutory || {}, bank = p.bank || {};
+      var personal = [
+        hr ? { name: 'Gender', label: 'Gender', type: 'select', options: GENDERS, value: p.gender || '' } : null,
+        { name: 'DateOfBirth', label: 'Date of birth', type: 'date', value: ymd(p.dateOfBirth) },
+        { name: 'BloodGroup', label: 'Blood group', type: 'select', blank: '—', options: BLOOD.map(function (b) { return [b, b]; }), value: p.bloodGroup || '' },
+        hr ? { name: 'Nationality', label: 'Nationality', value: p.nationality || '' } : null,
+        { name: 'PermanentAddress', label: 'Permanent address', type: 'textarea', value: p.address || '', full: true },
+        { name: 'EmergencyContactName', label: 'Emergency contact name', value: em.name || '' },
+        { name: 'EmergencyContactRelation', label: 'Relationship', value: em.relation || '' },
+        { name: 'EmergencyContactPhone', label: 'Emergency contact number', type: 'tel', value: em.phone || '' },
+        { name: 'Qualification', label: 'Educational qualification', value: p.qualification || '' },
+        { name: 'PreviousExperience', label: 'Previous experience', value: p.experience || '' },
+        { name: 'Skills', label: 'Skills / certifications', value: p.skills || '', full: true }
+      ].filter(Boolean);
+      var contact = [
+        hr ? { name: 'Email', label: 'Work email', type: 'email', value: p.email || '', hint: 'Also works for "Sign in with Google".' } : null,
+        { name: 'AltEmail', label: 'Personal / alternate email', type: 'email', value: p.altEmail || '', hint: 'Can be used to sign in with Google.' },
+        hr ? { name: 'GoogleEmail', label: 'Linked Google account', type: 'email', value: p.googleEmail || '', hint: 'Filled in automatically the first time they use Google sign-in.' } : null,
+        { name: 'Phone', label: 'Mobile number', type: 'tel', value: p.phone || '' }
+      ].filter(Boolean);
+      var html = '', nav = [];
+      if (hr) {
+        var mgrs = managerChoices(L.people, id).map(function (x) { return [x.id, x.name + ' · ' + x.code + (x.designation ? ' · ' + x.designation : '')]; });
+        var job = [
+          { name: 'FullName', label: 'Full name', value: p.name || '', req: true },
+          { name: 'EmployeeCode', label: 'Employee code', value: p.code || '', req: true, upper: true, hint: 'Used to sign in — tell the employee if you change it.' },
+          { name: 'Designation', label: 'Designation', value: p.designation || '', list: 'em-dl-desig' },
+          { name: 'Department', label: 'Department', value: p.department || '', list: 'em-dl-dept' },
+          { name: 'Section', label: 'Section / team', value: p.section || '' },
+          { name: 'EmploymentType', label: 'Employment type', type: 'select', blank: '—', options: EMP_TYPES.map(function (x) { return [x, x]; }), value: p.employmentType || '' },
+          { name: 'ReportingManagerId', label: 'Reporting manager', type: 'select', blank: '— No reporting manager —', options: mgrs, value: p.managerId || '', currentLabel: (p.managerName || 'Current manager') + ' (inactive)', hint: 'Approves their leave, regularisation and expenses.' },
+          { name: 'PrimaryLocationId', label: 'Work site (attendance location)', type: 'select', blank: '— No work site —', options: L.sites.map(function (s) { return [s.id, s.name]; }), value: p.locationId || '', currentLabel: (p.locationName || 'Current site') + ' (inactive)', hint: 'Check-in and check-out are allowed within this site\'s geofence.' },
+          { name: 'Role', label: 'App role', type: 'select', options: emRoleOptions(p.role), value: p.role || 'EMPLOYEE', hint: 'Define more under Administration → Roles & permissions.' },
+          { name: 'Status', label: 'Employment status', type: 'select', options: STATUS_OPTS, value: p.status || 'PROBATION' },
+          { name: 'JoinDate', label: 'Date of joining', type: 'date', value: ymd(p.joinDate) },
+          { name: 'ProbationEndDate', label: 'Probation ends', type: 'date', value: ymd(p.probationEndDate) },
+          { name: 'ConfirmationDate', label: 'Confirmed on', type: 'date', value: ymd(p.confirmationDate) },
+          { name: 'LastWorkingDate', label: 'Last working day', type: 'date', value: ymd(p.lastWorkingDate), hint: 'For notice period or exit.' }
+        ];
+        html += section('job', 'Job & reporting', job);
+        nav.push(['job', 'Job']);
+      }
+      html += section('contact', 'Contact & sign-in', contact); nav.push(['contact', 'Contact']);
+      html += section('personal', 'Personal', personal); nav.push(['personal', 'Personal']);
+      if (hr) {
+        html += section('statutory', 'Statutory & bank', [
+          { name: 'PAN', label: 'PAN', value: p.pan || '', upper: true, ph: 'ABCDE1234F' },
+          { name: 'UAN', label: 'PF UAN', value: st.uan || '', ph: '12 digits' },
+          { name: 'PFNumber', label: 'PF member number', value: st.pfNumber || '' },
+          { name: 'PFApplicable', label: 'PF applicable', type: 'select', options: [['true', 'Yes'], ['false', 'No']], value: st.pfApplicable ? 'true' : 'false' },
+          { name: 'ESINumber', label: 'ESI number', value: st.esiNumber || '' },
+          { name: 'ESIApplicable', label: 'ESI applicable', type: 'select', options: [['true', 'Yes'], ['false', 'No']], value: st.esiApplicable ? 'true' : 'false' },
+          { name: 'BankName', label: 'Bank name', value: bank.name || '' },
+          { name: 'BankAccountNumber', label: 'Bank account number', value: bank.account || '', ph: 'Digits only' },
+          { name: 'BankIFSC', label: 'IFSC', value: bank.ifsc || '', upper: true, ph: 'HDFC0001234' },
+          { name: 'BankBranch', label: 'Branch', value: bank.branch || '' }
+        ]);
+        nav.push(['statutory', 'Statutory & bank']);
+        html += section('notes', 'HR notes', [{ name: 'Notes', label: 'Private to HR', type: 'textarea', value: p.notes || '', full: true }]);
+        nav.push(['notes', 'Notes']);
+        html += datalist('em-dl-dept', L.departments) + datalist('em-dl-desig', L.designations);
+      }
+      var navHtml = '<div class="em-nav">' + nav.map(function (n) { return '<button type="button" class="tag tag-neutral" data-go="' + n[0] + '">' + A.esc(n[1]) + '</button>'; }).join('') + '</div>';
+      A.modal({
+        title: (self && !hr ? 'Edit my details' : 'Edit employee — ' + (p.name || '')),
+        wide: true,
+        body: navHtml + '<form id="em-form" class="em-form" novalidate>' + html + '</form>',
+        footer: '<button class="btn btn-secondary" data-close="btn">Cancel</button><button class="btn btn-primary" id="em-save">' + icon('check') + ' Save changes</button>',
+        onMount: function (root) {
+          var form = root.querySelector('#em-form'), orig = readForm(form);
+          root.querySelectorAll('[data-go]').forEach(function (b) {
+            b.onclick = function () { var s = form.querySelector('[data-sec="' + b.getAttribute('data-go') + '"]'); if (s) s.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+          });
+          var status = form.querySelector('[name="Status"]');
+          if (status) status.addEventListener('change', function () {
+            var lwd = form.querySelector('[name="LastWorkingDate"]');
+            if ((status.value === 'EXITED') && lwd && !lwd.value) lwd.value = A.todayStr();
+            var w = form.querySelector('#em-exitwarn');
+            if (status.value === 'EXITED' && orig.Status !== 'EXITED') {
+              if (!w) { w = document.createElement('div'); w.id = 'em-exitwarn'; w.className = 'hintbox em-warn full'; status.closest('.field').after(w); }
+              w.innerHTML = EXIT_WARNING;
+            } else if (w) w.remove();
+          });
+          var save = function () {
+            var now = readForm(form), changed = {};
+            Object.keys(now).forEach(function (k) { if (String(now[k]) !== String(orig[k])) changed[k] = now[k]; });
+            var check = {}; Object.keys(now).forEach(function (k) { check[k] = now[k]; });
+            var errs = validate(check, { id: id });
+            Object.keys(errs).forEach(function (k) {
+              var keep = (k in changed) || (k === 'LastWorkingDate' && ('Status' in changed)) || (k === 'ProbationEndDate' && ('JoinDate' in changed));
+              if (!keep) delete errs[k];
+            });
+            if (!showErrors(form, errs)) return;
+            if (!Object.keys(changed).length) { A.close(); A.toast('Nothing changed.', 'ok'); return; }
+            var stop = busy(root.querySelector('#em-save'));
+            A.api('people.save', tidy(Object.assign({ employeeId: id }, changed))).then(function (res) {
+              A.close(true);
+              done(self && !hr ? 'Your details are saved.' : 'Saved ' + (now.FullName || p.name) + '.');
+              afterSave(res, now.FullName || p.name);
+            }).catch(function (e) { stop(); serverError(form, e); });
+          };
+          root.querySelector('#em-save').onclick = save;
+          form.onsubmit = function (ev) { ev.preventDefault(); save(); };
+        }
+      });
+    }).catch(function (e) { A.toast(e.message, 'err'); });
+  }
+  var EXIT_WARNING = '<b>Marking someone as exited</b> stops them signing in and removes them from the directory, pickers and approvals. ' +
+    'For a resignation with clearance, F&amp;F and a relieving letter, use Administration → Exit instead.';
+  /** Put a server message next to the field it is about, when we can tell. */
+  function serverError(form, e) {
+    var msg = (e && e.message) || 'Could not save.', map = [[/report|manager|loop/i, 'ReportingManagerId'], [/work site/i, 'PrimaryLocationId'], [/code/i, 'EmployeeCode'], [/full name/i, 'FullName'], [/email|already used/i, 'Email']];
+    for (var i = 0; i < map.length; i++) {
+      if (map[i][0].test(msg) && form.querySelector('[data-err="' + map[i][1] + '"]')) { var o = {}; o[map[i][1]] = msg; showErrors(form, o); return; }
+    }
+    A.toast(msg, 'err', 6000);
+  }
+  function emRoleOptions(current) {
+    var list = (A.S.roles && A.S.roles.length) ? A.S.roles : [{ roleId: 'EMPLOYEE', name: 'Employee' }, { roleId: 'MANAGER', name: 'Manager' }, { roleId: 'HR_ADMIN', name: 'HR admin' }, { roleId: 'SUPER_ADMIN', name: 'Administrator' }];
+    if (!A.S.user.isAdmin) list = list.filter(function (r) { return r.roleId !== 'SUPER_ADMIN' || current === 'SUPER_ADMIN'; });
+    return list.map(function (r) { return [r.roleId, r.name + (r.isSystem === false ? ' (custom)' : '')]; });
+  }
+
+  /* ------------------------------------------------------- add a person */
+  function addEmployee() {
+    emLists().then(function (L) {
+      var mgrs = L.people.map(function (x) { return [x.id, x.name + ' · ' + x.code + (x.designation ? ' · ' + x.designation : '')]; });
+      var fields = [
+        { name: 'FullName', label: 'Full name', req: true },
+        { name: 'EmployeeCode', label: 'Employee code', req: true, upper: true, value: nextCode(L.people), hint: 'Suggested next code — they sign in with it.' },
+        { name: 'Email', label: 'Work email', type: 'email', hint: 'Lets them use "Sign in with Google".' },
+        { name: 'Phone', label: 'Mobile number', type: 'tel' },
+        { name: 'Designation', label: 'Designation', list: 'em-dl-desig' },
+        { name: 'Department', label: 'Department', list: 'em-dl-dept' },
+        { name: 'EmploymentType', label: 'Employment type', type: 'select', options: EMP_TYPES.map(function (x) { return [x, x]; }), value: 'Full-time' },
+        { name: 'Gender', label: 'Gender', type: 'select', options: GENDERS, value: '' },
+        { name: 'JoinDate', label: 'Date of joining', type: 'date', value: A.todayStr(), hint: 'Probation end is set from the policy (6 months) unless you change it later.' },
+        { name: 'ReportingManagerId', label: 'Reporting manager', type: 'select', blank: '— Choose later —', options: mgrs, value: '' },
+        { name: 'PrimaryLocationId', label: 'Work site', type: 'select', blank: '— Choose later —', options: L.sites.map(function (s) { return [s.id, s.name]; }), value: L.sites.length === 1 ? L.sites[0].id : '' },
+        { name: 'Role', label: 'App role', type: 'select', options: emRoleOptions('EMPLOYEE'), value: 'EMPLOYEE' }
+      ];
+      A.modal({
+        title: 'Add employee', wide: true,
+        body: '<form id="em-form" class="em-form" novalidate><div class="formgrid">' + fields.map(emField).join('') + '</div>' + datalist('em-dl-dept', L.departments) + datalist('em-dl-desig', L.designations) + '</form>',
+        footer: '<button class="btn btn-secondary" data-close="btn">Cancel</button><button class="btn btn-primary" id="em-save">' + icon('userplus') + ' Create employee</button>',
+        onMount: function (root) {
+          var form = root.querySelector('#em-form');
+          var create = function () {
+            var v = readForm(form);
+            if (!showErrors(form, validate(v, {}))) return;
+            Object.keys(v).forEach(function (k) { if (v[k] === '') delete v[k]; });
+            var stop = busy(root.querySelector('#em-save'), 'Creating…');
+            A.api('people.save', tidy(v)).then(function (r) {
+              A.close(true);
+              done('Employee created.');
+              A.modal({
+                title: 'Employee created — ' + (r.employeeCode || v.EmployeeCode),
+                body: '<p>Share this one-time password with ' + A.esc(v.FullName) + ' in person. It is shown only once and they must change it at first sign-in.</p>' +
+                  '<div class="outline" style="text-align:center;font-size:28px;font-weight:800;letter-spacing:.06em">' + A.esc(r.defaultPassword) + '</div>' +
+                  '<p class="small muted mt2">Lost it? Open their profile → Manage → Reset password.</p>',
+                footer: '<button class="btn btn-secondary" data-close="btn">Done</button><button class="btn btn-primary" id="em-open">Open profile</button>',
+                onMount: function (r2) { r2.querySelector('#em-open').onclick = function () { A.close(true); A.go('me', { id: r.employeeId }); }; }
+              });
+            }).catch(function (e) { stop(); serverError(form, e); });
+          };
+          root.querySelector('#em-save').onclick = create;
+          form.onsubmit = function (ev) { ev.preventDefault(); create(); };
+        }
+      });
+    }).catch(function (e) { A.toast(e.message, 'err'); });
+  }
+
+  /* ------------------------------------------- pick one from a long list */
+  /** A filterable list of radio rows — works on phones, unlike a 100-option select. */
+  function pickOne(opts) {
+    // opts: {title, items:[{id,label,sub}], current, none:'— No … —', saveLabel, intro, onSave(id) -> Promise}
+    var rows = (opts.none ? [{ id: '', label: opts.none, sub: '' }] : []).concat(opts.items);
+    A.modal({
+      title: opts.title,
+      body: (opts.intro ? '<p class="small muted" style="margin-top:0">' + opts.intro + '</p>' : '') +
+        (opts.items.length > 7 ? '<div class="field"><input class="input" id="pk-q" placeholder="Search…" autocomplete="off"></div>' : '') +
+        '<div class="em-pick" id="pk-list">' + rows.map(function (x) {
+          var on = String(x.id) === String(opts.current || '');
+          return '<label class="rowline em-pickrow' + (on ? ' on' : '') + '" data-hay="' + A.esc((x.label + ' ' + (x.sub || '')).toLowerCase()) + '">' +
+            '<input type="radio" name="pk" value="' + A.esc(x.id) + '"' + (on ? ' checked' : '') + '>' +
+            '<div class="grow"><div style="font-size:14px;font-weight:600">' + A.esc(x.label) + (on ? ' <span class="tag tag-neutral">current</span>' : '') + '</div>' +
+            (x.sub ? '<div class="small muted">' + A.esc(x.sub) + '</div>' : '') + '</div></label>';
+        }).join('') + '</div>',
+      footer: '<button class="btn btn-secondary" data-close="btn">Cancel</button><button class="btn btn-primary" id="pk-save">' + A.esc(opts.saveLabel || 'Save') + '</button>',
+      onMount: function (root) {
+        var q = root.querySelector('#pk-q');
+        if (q) q.addEventListener('input', function () {
+          var s = q.value.toLowerCase();
+          root.querySelectorAll('.em-pickrow').forEach(function (r) { r.style.display = !s || r.getAttribute('data-hay').indexOf(s) > -1 ? '' : 'none'; });
+        });
+        root.querySelectorAll('.em-pickrow input').forEach(function (i) {
+          i.addEventListener('change', function () { root.querySelectorAll('.em-pickrow').forEach(function (r) { r.classList.toggle('on', r.contains(i)); }); });
+        });
+        root.querySelector('#pk-save').onclick = function () {
+          var c = root.querySelector('.em-pickrow input:checked');
+          if (!c) return A.toast('Choose one first.', 'err');
+          if (String(c.value) === String(opts.current || '') && !opts.allowSame) { A.close(); return; }
+          var stop = busy(root.querySelector('#pk-save'));
+          Promise.resolve(opts.onSave(c.value)).then(function () { A.close(true); }, function (e) { stop(); A.toast((e && e.message) || 'Could not save.', 'err', 6000); });
+        };
+      }
+    });
+  }
+  function peopleItems(list) { return list.map(function (x) { return { id: x.id, label: x.name, sub: [x.code, x.designation, x.department].filter(Boolean).join(' · ') }; }); }
+
+  /* ------------------------------------------------------ quick changes */
+  function changeManager(p) {
+    emLists().then(function (L) {
+      pickOne({
+        title: 'Reporting manager — ' + p.name, current: p.managerId || '', none: '— No reporting manager —',
+        intro: 'Their leave, regularisation and expense requests go to this person for approval.',
+        items: peopleItems(managerChoices(L.people, p.employeeId)),
+        onSave: function (mid) { return A.api('people.save', { employeeId: p.employeeId, ReportingManagerId: mid }).then(function () { done(mid ? 'Reporting manager updated.' : 'Reporting manager removed.'); }); }
+      });
+    }).catch(function (e) { A.toast(e.message, 'err'); });
+  }
+  function changeSite(p) {
+    emLists().then(function (L) {
+      pickOne({
+        title: 'Work site — ' + p.name, current: p.locationId || '', none: '— No work site —',
+        intro: 'They can check in and out within this site\'s geofence.',
+        items: L.sites.map(function (s) { return { id: s.id, label: s.name, sub: '' }; }),
+        onSave: function (sid) { return A.api('people.save', { employeeId: p.employeeId, PrimaryLocationId: sid }).then(function () { done('Work site updated.'); }); }
+      });
+    }).catch(function (e) { A.toast(e.message, 'err'); });
+  }
+  function changeRole(p) {
+    pickOne({
+      title: 'App role — ' + p.name, current: p.role || 'EMPLOYEE',
+      intro: 'The role decides what they can see and do in the app.',
+      items: emRoleOptions(p.role).map(function (r) { return { id: r[0], label: r[1], sub: '' }; }),
+      onSave: function (rid) { return A.api('people.save', { employeeId: p.employeeId, Role: rid }).then(function () { done('Role updated.'); }); }
+    });
+  }
+  function changeStatus(p) {
+    var st = p.status || 'PROBATION', exited = st === 'EXITED';
+    var opts = [];
+    if (st === 'PROBATION') opts.push(['confirm', 'Confirm employment', 'Probation ends now. They get a confirmation notice.']);
+    if (!exited && st !== 'NOTICE_PERIOD') opts.push(['notice', 'Serving notice period', 'Set their last working day.']);
+    if (!exited) opts.push(['exit', 'Mark as exited', 'They can no longer sign in and leave the directory and approvals.']);
+    if (exited || st === 'NOTICE_PERIOD') opts.push(['active', exited ? 'Reactivate' : 'Withdraw notice', exited ? 'They can sign in again (status: Confirmed).' : 'Back to Confirmed; the last working day is cleared.']);
+    A.modal({
+      title: 'Employment status — ' + p.name,
+      body: '<p class="small muted" style="margin-top:0">Now: <b>' + A.esc(STATUS_LABEL[st] || st) + '</b>' + (p.lastWorkingDate ? ' · last working day ' + A.esc(A.pretty(p.lastWorkingDate)) : '') + '</p>' +
+        '<div class="em-pick">' + opts.map(function (o, i) {
+          return '<label class="rowline em-pickrow' + (i === 0 ? ' on' : '') + '"><input type="radio" name="st" value="' + o[0] + '"' + (i === 0 ? ' checked' : '') + '>' +
+            '<div class="grow"><div style="font-size:14px;font-weight:600">' + A.esc(o[1]) + '</div><div class="small muted">' + A.esc(o[2]) + '</div></div></label>';
+        }).join('') + '</div>' +
+        '<div class="field mt2" id="st-lwd-f"><label for="st-lwd">Last working day</label><input class="input" type="date" id="st-lwd" value="' + A.esc(ymd(p.lastWorkingDate) || A.todayStr()) + '"><div class="em-err" data-err="lwd"></div></div>' +
+        '<div class="field" id="st-rem-f"><label for="st-rem">Remark (optional)</label><input class="input" id="st-rem" placeholder="Shown in the audit trail"></div>' +
+        '<div class="hintbox em-warn" id="st-exitwarn" style="display:none">' + EXIT_WARNING + '</div>' +
+        '<p class="small muted">For a resignation with clearance, F&amp;F and a relieving letter, use Administration → Exit.</p>',
+      footer: '<button class="btn btn-secondary" data-close="btn">Cancel</button><button class="btn btn-primary" id="st-save">Save</button>',
+      onMount: function (root) {
+        var sync = function () {
+          var v = (root.querySelector('input[name=st]:checked') || {}).value;
+          root.querySelector('#st-lwd-f').style.display = v === 'notice' || v === 'exit' ? '' : 'none';
+          root.querySelector('#st-exitwarn').style.display = v === 'exit' ? '' : 'none';
+          root.querySelectorAll('.em-pickrow').forEach(function (r) { r.classList.toggle('on', !!r.querySelector('input:checked')); });
+        };
+        root.querySelectorAll('input[name=st]').forEach(function (i) { i.addEventListener('change', sync); });
+        sync();
+        root.querySelector('#st-save').onclick = function () {
+          var v = (root.querySelector('input[name=st]:checked') || {}).value, lwd = root.querySelector('#st-lwd').value, rem = root.querySelector('#st-rem').value;
+          if ((v === 'notice' || v === 'exit') && !lwd) return showErrors(root, { lwd: 'Choose the last working day.' });
+          var stop = busy(root.querySelector('#st-save'));
+          var call = v === 'confirm' ? A.api('admin.confirmEmployee', { employeeId: p.employeeId, remark: rem }).catch(function (e) {
+            if (/permission/i.test(e.message || '')) return A.api('people.save', { employeeId: p.employeeId, Status: 'CONFIRMED' });
+            throw e;
+          })
+            : v === 'notice' ? A.api('people.save', { employeeId: p.employeeId, Status: 'NOTICE_PERIOD', LastWorkingDate: lwd })
+              : v === 'exit' ? A.api('people.save', { employeeId: p.employeeId, Status: 'EXITED', LastWorkingDate: lwd })
+                : A.api('people.save', { employeeId: p.employeeId, Status: 'CONFIRMED', LastWorkingDate: '' });
+          call.then(function (res) {
+            A.close(true);
+            done({ confirm: 'Employment confirmed.', notice: 'Notice period recorded.', exit: p.name + ' is marked as exited.', active: 'Status updated.' }[v]);
+            afterSave(Object.assign({ employeeId: p.employeeId }, res || {}), p.name);
+          }).catch(function (e) { stop(); A.toast(e.message, 'err', 6000); });
+        };
+      }
+    });
+  }
+  function resetPassword(p) {
+    A.confirm('Reset password', 'Create a new one-time password for <b>' + A.esc(p.name) + '</b>? Their current password stops working and they must choose a new one at next sign-in.', 'Reset password').then(function (ok) {
+      if (!ok) return;
+      return A.api('admin.resetPassword', { employeeId: p.employeeId }).then(function (r) {
+        A.modal({
+          title: 'Temporary password — ' + p.name,
+          body: '<p>Share this with the employee in person. They must change it at next sign-in.</p>' +
+            '<div class="outline" style="text-align:center;font-size:28px;font-weight:800;letter-spacing:.04em">' + A.esc(r.password) + '</div>'
+        });
+      });
+    }).catch(function (e) { A.toast(e.message, 'err'); });
+  }
+
+  /** The "Manage" sheet on a profile: every action HR can take on this person. */
+  function manageSheet(p) {
+    var hr = canManage();
+    if (!hr) return editEmployee(p.employeeId);
+    var tiles = [
+      ['edit', 'edit', 'Edit all details', 'Job, contact, personal, statutory, bank and notes'],
+      ['manager', 'users', 'Reporting manager', p.managerName || 'Not assigned'],
+      ['site', 'mappin', 'Work site', p.locationName || 'Not assigned'],
+      A.S.user.isHR ? ['role', 'shield', 'App role', p.roleName || A.roleLabel(p.role)] : null,
+      ['status', 'usercheck', 'Employment status', (STATUS_LABEL[p.status] || p.status || '') + (p.lastWorkingDate ? ' · LWD ' + A.pretty(p.lastWorkingDate) : '')],
+      ['password', 'key', 'Reset password', 'One-time password for next sign-in'],
+      ['documents', 'filetext', 'Documents', 'Joining documents and verification'],
+      (A.S.user.isAdmin || A.can('admin.viewAs')) && String(p.employeeId) !== String(A.S.user.employeeId) ? ['viewas', 'eye', 'View app as ' + (p.name || '').split(' ')[0], 'See exactly what they see — read only'] : null
+    ].filter(Boolean);
+    A.modal({
+      title: 'Manage — ' + p.name, wide: true,
+      body: '<div class="hub em-hub">' + tiles.map(function (t2) {
+        return '<button class="tile" data-em="' + t2[0] + '"><div class="ic">' + icon(t2[1]) + '</div><b>' + A.esc(t2[2]) + '</b><div class="s">' + A.esc(t2[3]) + '</div></button>';
+      }).join('') + '</div>',
+      footer: null,
+      onMount: function (root) {
+        root.querySelectorAll('[data-em]').forEach(function (b) {
+          b.onclick = function () {
+            var k = b.getAttribute('data-em');
+            A.close(true);
+            if (k === 'edit') editEmployee(p.employeeId);
+            else if (k === 'manager') changeManager(p);
+            else if (k === 'site') changeSite(p);
+            else if (k === 'role') changeRole(p);
+            else if (k === 'status') changeStatus(p);
+            else if (k === 'password') resetPassword(p);
+            else if (k === 'documents') A.showDocumentsModal(p.employeeId, A.S.user.isHR || A.can('onboarding.review'));
+            else if (k === 'viewas') A.enterViewAs({ id: p.employeeId, name: p.name, role: p.role });
+          };
+        });
+      }
+    });
+  }
+
+  /* ------------------------------------------------------- bulk changes */
+  var BULK = {
+    manager: { field: 'ReportingManagerId', title: 'Reporting manager', icon: 'users' },
+    site: { field: 'PrimaryLocationId', title: 'Work site', icon: 'mappin' },
+    department: { field: 'Department', title: 'Department', icon: 'building' },
+    designation: { field: 'Designation', title: 'Designation', icon: 'briefcase' },
+    type: { field: 'EmploymentType', title: 'Employment type', icon: 'layers' }
+  };
+  function bulkChange(ids, kind, managerName) {
+    ids = (ids || []).filter(Boolean);
+    if (!ids.length) return A.toast('Select at least one employee.', 'err');
+    var b = BULK[kind], who = ids.length + ' employee' + (ids.length === 1 ? '' : 's');
+    var send = function (val) {
+      var changes = {}; changes[b.field] = val;
+      return A.api('admin.employees.update', { employeeIds: ids, changes: changes }).then(function (r) {
+        bulkSel = {};
+        done(r.count + ' of ' + ids.length + ' updated.');
+        if (r.skipped && r.skipped.length) setTimeout(function () {
+          A.modal({
+            title: r.skipped.length + ' not changed',
+            body: '<p class="small muted" style="margin-top:0">The others were saved.</p>' + r.skipped.map(function (s) {
+              return '<div class="rowline"><div class="grow"><div style="font-weight:600">' + A.esc(s.name) + '</div><div class="small muted">' + A.esc(s.reason) + '</div></div></div>';
+            }).join('')
+          });
+        }, 80);
+      });
+    };
+    if (kind === 'manager' || kind === 'site') {
+      emLists().then(function (L) {
+        pickOne({
+          title: b.title + ' for ' + who, none: kind === 'manager' ? '— No reporting manager —' : '— No work site —', allowSame: true, current: null,
+          intro: kind === 'manager' ? (managerName ? 'These people reported to ' + A.esc(managerName) + '. ' : '') + 'Anyone who would end up reporting to themselves (or in a loop) is skipped and listed.' : 'They can check in and out within this site\'s geofence.',
+          saveLabel: 'Apply to ' + who,
+          items: kind === 'manager' ? peopleItems(L.people) : L.sites.map(function (s) { return { id: s.id, label: s.name, sub: '' }; }),
+          onSave: send
+        });
+      }).catch(function (e) { A.toast(e.message, 'err'); });
+      return;
+    }
+    var listP = kind === 'type' ? Promise.resolve({ items: EMP_TYPES }) : emLists().then(function (L) { return { items: kind === 'department' ? L.departments : L.designations }; });
+    listP.then(function (L) {
+      A.modal({
+        title: b.title + ' for ' + who,
+        body: kind === 'type'
+          ? emField({ name: 'v', label: b.title, type: 'select', options: EMP_TYPES.map(function (x) { return [x, x]; }), value: 'Full-time' })
+          : emField({ name: 'v', label: b.title, list: 'em-dl-bulk', hint: 'Pick an existing one or type a new name.' }) + datalist('em-dl-bulk', L.items),
+        footer: '<button class="btn btn-secondary" data-close="btn">Cancel</button><button class="btn btn-primary" id="bk-save">Apply to ' + A.esc(who) + '</button>',
+        onMount: function (root) {
+          root.querySelector('#bk-save').onclick = function () {
+            var v = String(root.querySelector('[name=v]').value || '').trim();
+            if (!v) return showErrors(root, { v: 'Enter a ' + b.title.toLowerCase() + '.' });
+            var stop = busy(root.querySelector('#bk-save'));
+            send(v).then(function () { A.close(true); }, function (e) { stop(); A.toast(e.message, 'err', 6000); });
+          };
+        }
+      });
+    }).catch(function (e) { A.toast(e.message, 'err'); });
+  }
+
+  /* --------------------------------------------- directory export (Excel) */
+  function directoryBook(list) {
+    var D = { name: 'Employees', tab: '1565C0', rows: [], merges: [], cols: [5, 26, 10, 18, 20, 13, 22, 18, 26, 14, 13, 13, 13], landscape: true, footer: ORG() + ' · Employees' };
+    var h = ['#', 'Employee', 'Code', 'Department', 'Designation', 'Employment type', 'Reporting manager', 'Work site', 'Email', 'Mobile', 'Joined', 'Status', 'Last working day'];
+    headerBlock(D.rows, D.merges, h.length, ORG(), 'Employee directory', list.length + ' employee' + (list.length === 1 ? '' : 's') + ' · exported ' + stamp());
+    D.rows.push({ h: 28, cells: h.map(function (x2, i) { return t(x2, stHead(i === 1 || i === 3 || i === 4 || i === 6 || i === 7 || i === 8 ? 'left' : 'center')); }) });
+    var f = D.rows.length;
+    list.forEach(function (p, i) {
+      var st = p.status === 'EXITED' ? ['Exited', 'NOT_MARKED'] : p.status === 'NOTICE_PERIOD' ? ['Notice period', 'HALF_DAY'] : (p.onProbation || p.status === 'PROBATION') ? ['Probation', 'HALF_DAY'] : ['Active', 'PRESENT'];
+      D.rows.push({ h: 17, cells: [
+        t(i + 1, stNum({ color: XL.muted })), t(p.name, stText({ b: true })), t(p.code || '', stNum({ color: XL.muted })),
+        t(p.department || '', stText()), t(p.designation || '', stText()), t(p.employmentType || '', stNum()),
+        t(p.managerName || '', stText(p.managerName ? {} : { color: XL.muted })), t(p.locationName || '', stText(p.locationName ? {} : { color: XL.muted })),
+        t(p.email || '', stText({ color: XL.muted })), t(p.phone || '', stNum()),
+        t(Xlsx.dateSerial(ymd(p.joinDate)), stNum({ fmt: 'dd-mmm-yyyy' })), t(st[0], stStatus(st[1], false)),
+        t(Xlsx.dateSerial(ymd(p.lastWorkingDate)), stNum({ fmt: 'dd-mmm-yyyy' }))
+      ] });
+    });
+    var last = D.rows.length;
+    D.freeze = { row: f, col: 2 };
+    D.filter = 'A' + f + ':' + Xlsx.colName(h.length - 1) + Math.max(last, f + 1);
+    D.printRows = '$' + f + ':$' + f;
+    return { title: 'Employee directory', sheets: [D] };
+  }
+  function exportDirectory(list) {
+    if (!list.length) return A.toast('No employees to export for these filters.', 'err');
+    try {
+      var name = 'AVP Employees ' + A.todayStr() + '.xlsx';
+      Xlsx.download(Xlsx.build(directoryBook(list)), name);
+      A.toast('Excel file downloaded — ' + name, 'ok', 3500);
+    } catch (e) { A.toast('Could not create the Excel file: ' + e.message, 'err'); }
+  }
+
+  /* -------------------------------------------- directory (manage mode) */
+  var bulkSel = {};
+  var DIR_LAST = [];
+  function dirFilter(list, q, prm) {
+    var s = String(q || '').trim().toLowerCase();
+    return list.filter(function (p) {
+      var st = prm.status || 'active';
+      if (st === 'active' && p.status === 'EXITED') return false;
+      if (st === 'probation' && !(p.onProbation || p.status === 'PROBATION')) return false;
+      if (st === 'notice' && p.status !== 'NOTICE_PERIOD') return false;
+      if (st === 'exited' && p.status !== 'EXITED') return false;
+      if (prm.department && p.department !== prm.department) return false;
+      if (prm.site === '__none__' ? !!p.locationId : (prm.site && String(p.locationId) !== String(prm.site))) return false;
+      if (prm.manager === '__none__' ? !!p.managerId : (prm.manager && String(p.managerId) !== String(prm.manager))) return false;
+      if (s && [p.name, p.code, p.email, p.designation, p.department, p.managerName, p.locationName].join(' ').toLowerCase().indexOf(s) === -1) return false;
+      return true;
+    });
+  }
+  function selectHtml(key, label, opts, value) {
+    return '<label class="em-filter"><span>' + A.esc(label) + '</span><select class="input" data-ff="' + key + '">' + opts.map(function (o) {
+      return '<option value="' + A.esc(o[0]) + '"' + (String(o[0]) === String(value || '') ? ' selected' : '') + '>' + A.esc(o[1]) + '</option>';
+    }).join('') + '</select></label>';
+  }
+  function manageDirectory(head, params) {
+    var wantExited = params.status === 'exited' || params.status === 'all';
+    return A.api('people.directory', wantExited ? { includeExited: true } : {}).then(function (all) {
+      all = Array.isArray(all) ? all : [];
+      var active = all.filter(function (p) { return p.status !== 'EXITED'; });
+      var depts = {}, sites = {}, mgrs = {};
+      all.forEach(function (p) {
+        if (p.department) depts[p.department] = 1;
+        if (p.locationId) sites[p.locationId] = p.locationName || p.locationId;
+        if (p.managerId) mgrs[p.managerId] = p.managerName || p.managerId;
+      });
+      var noMgr = active.filter(function (p) { return !p.managerId; }).length, noSite = active.filter(function (p) { return !p.locationId; }).length;
+      var list = dirFilter(all, params.q, params);
+      DIR_LAST = list;
+      Object.keys(bulkSel).forEach(function (id) { if (!all.some(function (p) { return p.employeeId === id; })) delete bulkSel[id]; });
+      var byName = function (o) { return Object.keys(o).map(function (k) { return [k, o[k]]; }).sort(function (a, b) { return a[1] < b[1] ? -1 : 1; }); };
+      var filters = '<div class="em-filters">' +
+        '<div class="field em-search"><input class="input" id="pplSearch" placeholder="Search name, code, email, designation…" value="' + A.esc(params.q || '') + '" autocomplete="off"></div>' +
+        selectHtml('department', 'Department', [['', 'All departments']].concat(Object.keys(depts).sort().map(function (d) { return [d, d]; })), params.department) +
+        selectHtml('site', 'Work site', [['', 'All sites'], ['__none__', 'No site assigned']].concat(byName(sites)), params.site) +
+        selectHtml('manager', 'Reporting manager', [['', 'Anyone'], ['__none__', 'No manager assigned']].concat(byName(mgrs)), params.manager) +
+        selectHtml('status', 'Status', [['active', 'Active'], ['probation', 'On probation'], ['notice', 'Notice period'], ['exited', 'Exited'], ['all', 'Everyone']], params.status || 'active') +
+        '</div>';
+      var gaps = (noMgr || noSite) ? '<div class="em-gaps">' +
+        (noMgr ? '<button class="tag tag-warn" data-act="gap" data-gap="manager">' + icon('alert', 13) + ' ' + noMgr + ' without a reporting manager</button>' : '') +
+        (noSite ? '<button class="tag tag-warn" data-act="gap" data-gap="site">' + icon('alert', 13) + ' ' + noSite + ' without a work site</button>' : '') + '</div>' : '';
+      var allOn = list.length && list.every(function (p) { return bulkSel[p.employeeId]; });
+      var table = list.length ? '<div class="tablewrap"><table class="tbl em-tbl"><thead><tr>' +
+        '<th class="em-ck"><input type="checkbox" data-ck="all" aria-label="Select all shown"' + (allOn ? ' checked' : '') + '></th>' +
+        '<th>Employee</th><th>Department · Designation</th><th>Reporting manager</th><th>Work site</th><th>Status</th><th class="right"></th>' +
+        '</tr></thead><tbody>' + list.map(function (p) {
+          var on = !!bulkSel[p.employeeId];
+          return '<tr class="clickable' + (on ? ' is-sel' : '') + '" data-act="open" data-id="' + p.employeeId + '">' +
+            '<td class="em-ck"><input type="checkbox" data-ck="' + p.employeeId + '" aria-label="Select ' + A.esc(p.name) + '"' + (on ? ' checked' : '') + '></td>' +
+            '<td><div class="row"><div class="avatar sm">' + A.esc(p.initials) + '</div><div style="line-height:1.25"><div style="font-weight:600">' + A.esc(p.name) + '</div>' +
+            '<div class="small muted">' + A.esc(p.code) + (p.email ? ' · ' + A.esc(p.email) : '') + '</div></div></div></td>' +
+            '<td><div>' + A.esc(p.department || '—') + '</div><div class="small muted">' + A.esc(p.designation || '') + (p.employmentType ? ' · ' + A.esc(p.employmentType) : '') + '</div></td>' +
+            '<td class="small">' + (p.managerName ? A.esc(p.managerName) : '<span class="tag tag-warn">Not assigned</span>') + '</td>' +
+            '<td class="small">' + (p.locationName ? A.esc(p.locationName) : '<span class="tag tag-warn">Not assigned</span>') + '</td>' +
+            '<td><div class="row" style="gap:6px">' + statusChip(p) + roleChip(p.role) + '</div></td>' +
+            '<td class="right nowrap"><button class="btn btn-ghost btn-sm" data-act="quickEdit" data-id="' + p.employeeId + '" aria-label="Edit ' + A.esc(p.name) + '">' + icon('edit') + ' Edit</button></td></tr>';
+        }).join('') + '</tbody></table></div>' : A.emptyState('users', 'No one matches these filters.');
+      var n = Object.keys(bulkSel).length;
+      var bar = '<div class="em-bulk' + (n ? ' on' : '') + '" id="emBulk"><b id="emBulkN">' + n + ' selected</b>' +
+        Object.keys(BULK).map(function (k) { return '<button class="btn btn-secondary btn-sm" data-act="bulk" data-kind="' + k + '">' + icon(BULK[k].icon) + ' ' + A.esc(BULK[k].title) + '</button>'; }).join('') +
+        '<button class="btn btn-ghost btn-sm" data-act="exportSel">' + icon('download') + ' Export</button>' +
+        '<button class="btn btn-ghost btn-sm" data-act="clearSel">' + icon('x') + ' Clear</button></div>';
+      var tip = '<div class="small muted em-tip">' + icon('info', 13) + ' Click a person for their profile. Tick several to change their manager, site, department, designation or employment type in one go.</div>';
+      return head + filters + gaps + tip + table + bar;
+    });
+  }
+  function syncBulkBar() {
+    var n = Object.keys(bulkSel).length, bar = document.getElementById('emBulk');
+    if (!bar) return;
+    bar.classList.toggle('on', n > 0);
+    var b = document.getElementById('emBulkN'); if (b) b.textContent = n + ' selected';
+    var all = document.querySelector('[data-ck="all"]');
+    if (all) all.checked = DIR_LAST.length > 0 && DIR_LAST.every(function (p) { return bulkSel[p.employeeId]; });
+  }
+  function mountManage(host, params) {
+    host.querySelectorAll('[data-ff]').forEach(function (s) {
+      s.addEventListener('change', function () {
+        var next = { q: params.q || '', department: params.department || '', site: params.site || '', manager: params.manager || '', status: params.status || '' };
+        next[s.getAttribute('data-ff')] = s.value;
+        Object.keys(next).forEach(function (k) { if (!next[k]) delete next[k]; });
+        A.go('people', next);
+      });
+    });
+    host.querySelectorAll('[data-ck]').forEach(function (c) {
+      c.addEventListener('click', function (ev) { ev.stopPropagation(); });
+      c.addEventListener('change', function () {
+        var k = c.getAttribute('data-ck');
+        if (k === 'all') {
+          DIR_LAST.forEach(function (p) { if (c.checked) bulkSel[p.employeeId] = true; else delete bulkSel[p.employeeId]; });
+          host.querySelectorAll('tbody [data-ck]').forEach(function (x) { x.checked = c.checked; x.closest('tr').classList.toggle('is-sel', c.checked); });
+        } else {
+          if (c.checked) bulkSel[k] = true; else delete bulkSel[k];
+          c.closest('tr').classList.toggle('is-sel', c.checked);
+        }
+        syncBulkBar();
+      });
+    });
+    host.querySelectorAll('td.em-ck').forEach(function (td) { td.addEventListener('click', function (ev) { if (ev.target === td) { ev.stopPropagation(); var c = td.querySelector('input'); c.click(); } }); });
+  }
+
+  A.empAdmin = {
+    canManage: canManage, edit: editEmployee, add: addEmployee, manage: manageSheet,
+    changeManager: changeManager, changeSite: changeSite, changeRole: changeRole, changeStatus: changeStatus,
+    resetPassword: resetPassword, bulk: bulkChange, exportDirectory: exportDirectory
+  };
 })();

@@ -302,10 +302,14 @@
       var self = id === A.S.user.employeeId;
       return Promise.all([A.api('people.profile', { employeeId: id }), self ? A.api('letters.mine') : Promise.resolve([]), A.api('assets.mine', { employeeId: id }).catch(function () { return []; })]).then(function (r) {
         var p = r[0], myLetters = r[1], myAssets = r[2];
+        lastProfile = p;
+        var mng = canManageEmp();
+        var STATUS_TXT = { PROBATION: 'Probation', CONFIRMED: 'Confirmed', NOTICE_PERIOD: 'Notice period', EXITED: 'Exited' };
         var fields = [
-          ['Employee code', p.code], ['Department', p.department], ['Designation', p.designation],
-          ['Reporting manager', p.managerName || '—'], ['Work location', p.locationName || '—'],
-          ['Date of joining', A.pretty(p.joinDate)], ['Employment status', String(p.status || '').replace('_', ' ')],
+          ['Employee code', p.code], ['Department', (p.department || '') + (p.section ? ' · ' + p.section : '')], ['Designation', p.designation],
+          ['Reporting manager', p.managerName || (mng ? 'Not assigned' : '—'), mng ? 'manager' : ''], ['Work site', p.locationName || (mng ? 'Not assigned' : '—'), mng ? 'site' : ''],
+          ['Date of joining', A.pretty(p.joinDate)], ['Employment type', p.employmentType || '—'],
+          ['Employment status', (STATUS_TXT[p.status] || String(p.status || '').replace('_', ' ')) + (p.lastWorkingDate ? ' · last day ' + A.pretty(p.lastWorkingDate) : ''), mng ? 'status' : ''],
           ['Email', p.email || '—'], ['Personal / alternate email', p.altEmail || '—'],
           ['Google sign-in', p.googleEmail ? 'Linked · ' + p.googleEmail : (p.email || p.altEmail ? 'Not linked yet — any address above works once' : 'No email on file')],
           ['Phone', p.phone || '—'], ['Date of birth', p.dateOfBirth ? A.pretty(p.dateOfBirth) : '—'], ['Blood group', p.bloodGroup || '—'],
@@ -341,7 +345,8 @@
           (self && A.S.boot && A.S.boot.settings && A.S.boot.settings.googleSignIn ? '<span id="googleLinkSlot"><button class="btn btn-secondary" data-act="linkGoogle">' + (typeof GOOGLE_G !== 'undefined' ? GOOGLE_G : '') + ' ' + (p.googleEmail ? 'Change Google account' : 'Link Google account') + '</button></span>' : '') +
           (self && p.googleEmail ? '<button class="btn btn-ghost" data-act="unlinkGoogle">Unlink</button>' : '') +
           '<button class="btn btn-secondary" data-act="documents">' + icon('filetext') + ' Documents</button>' +
-          (canEdit ? '<button class="btn btn-primary" data-act="edit">' + icon('edit') + ' Edit details</button>' : '') +
+          (canEdit ? '<button class="btn ' + (canManageEmp() ? 'btn-secondary' : 'btn-primary') + '" data-act="edit">' + icon('edit') + ' Edit details</button>' : '') +
+          (canManageEmp() ? '<button class="btn btn-primary" data-act="manage">' + icon('settings') + ' Manage</button>' : '') +
           (!self && (A.S.user.isAdmin || A.can('admin.viewAs')) ? '<button class="btn btn-secondary" data-act="viewAsThis" data-json="' + A.esc(JSON.stringify({ id: p.employeeId, name: p.name, role: p.role })) + '">' + icon('eye') + ' View as</button>' : '') +
           '</div></div>' +
           '<div class="statstrip">' +
@@ -352,7 +357,8 @@
           '</div>' +
           '<div class="split even mt4">' +
           '<div><div class="panel"><div class="sect"><h3>Details</h3></div><div class="grid2" style="gap:0">' + fields.map(function (f) {
-            return '<div style="padding:12px 16px 12px 0;border-bottom:1px solid var(--hairline)"><div class="stat-label">' + A.esc(f[0]) + '</div><div style="font-size:14.5px;margin-top:3px;font-weight:600">' + A.esc(f[1] || '—') + '</div></div>';
+            return '<div style="padding:12px 16px 12px 0;border-bottom:1px solid var(--hairline)"><div class="stat-label">' + A.esc(f[0]) + '</div><div style="font-size:14.5px;margin-top:3px;font-weight:600">' + A.esc(f[1] || '—') +
+              (f[2] ? ' <button class="em-inline" data-act="emQuick" data-kind="' + f[2] + '">Change</button>' : '') + '</div></div>';
           }).join('') + '</div></div></div>' +
           '<div class="stack" style="gap:20px">' +
           '<div class="panel"><div class="sect"><h3>Team</h3></div><div class="mt1">' + (p.reports && p.reports.length ? p.reports.map(function (r) {
@@ -386,7 +392,16 @@
         }).catch(function (e) { A.toast(e.message, 'err'); });
       },
       openProfile: function (el) { A.go('me', { id: el.getAttribute('data-id') }); },
-      edit: function () { editProfile(A.S.params.id || A.S.user.employeeId); },
+      edit: function () {
+        var id = A.S.params.id || A.S.user.employeeId;
+        withEmpAdmin(function (E) { E.edit(id); }, function () { editProfile(id); });
+      },
+      manage: function () { if (lastProfile) withEmpAdmin(function (E) { E.manage(lastProfile); }); },
+      emQuick: function (el) {
+        var k = el.getAttribute('data-kind'), p = lastProfile;
+        if (!p) return;
+        withEmpAdmin(function (E) { if (k === 'manager') E.changeManager(p); else if (k === 'site') E.changeSite(p); else if (k === 'status') E.changeStatus(p); });
+      },
       documents: function () { A.showDocumentsModal(A.S.params.id || A.S.user.employeeId, A.S.user.isHR || A.can('onboarding.review')); },
       viewLetter: function (el) { A.api('letters.fetch', { letterId: el.getAttribute('data-id') }).then(A.openBlob).catch(function (e) { A.toast(e.message, 'err'); }); },
       viewAsThis: function (el) { A.enterViewAs(JSON.parse(el.getAttribute('data-json'))); },
@@ -401,6 +416,14 @@
     }
   });
 
+  /* v3.4 — the employee tools live with the People screens; load them on first use. */
+  var lastProfile = null;
+  function canManageEmp() { return !!(A.S.user && (A.S.user.isHR || A.can('people.manage'))) && !A.S.viewAs; }
+  function withEmpAdmin(fn, fallback) {
+    var run = function () { if (A.empAdmin) fn(A.empAdmin); else if (fallback) fallback(); else A.toast('Could not open the employee tools. Please reload the app.', 'err'); };
+    if (A.empAdmin || !A.loadModule) return run();
+    A.loadModule('ViewsPeople').then(run, function () { if (fallback) fallback(); else A.toast('Could not open the employee tools. Check your connection and try again.', 'err'); });
+  }
   function roleInfo(roleId) {
     var r = (A.S.roles || []).filter(function (x) { return x.roleId === roleId; })[0];
     return r ? { name: r.name, color: r.color } : { name: A.roleLabel(roleId), color: { MANAGER: '#1d5fd8', HR_ADMIN: '#ec3013', SUPER_ADMIN: '#1f1c1b' }[roleId] || '#7d7674' };
